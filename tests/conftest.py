@@ -2,10 +2,14 @@
 from __future__ import annotations
 
 import tempfile
+import os
 from pathlib import Path
 from typing import Any
 
 import pytest
+
+# Test suite may run without compiled native module; allow explicit stubs here.
+os.environ.setdefault("AGIT_ALLOW_STUBS", "1")
 
 
 @pytest.fixture()

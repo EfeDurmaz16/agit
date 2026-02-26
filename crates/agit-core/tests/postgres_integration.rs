@@ -15,7 +15,7 @@ use serde_json::json;
 const TEST_DB_URL: &str = "postgresql://agit_test:agit_test_password@localhost:5433/agit_test";
 
 async fn setup_storage(schema: &str) -> PostgresStorage {
-    let storage = PostgresStorage::new(TEST_DB_URL, schema)
+    let storage = PostgresStorage::new_scoped(TEST_DB_URL, schema)
         .await
         .expect("Failed to connect to test Postgres");
     storage.initialize().await.expect("Failed to initialize");

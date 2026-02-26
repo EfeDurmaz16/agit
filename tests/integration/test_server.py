@@ -83,6 +83,54 @@ class TestServerAPI:
         assert resp.status_code == 200
         assert resp.json()["count"] >= 1
 
+    def test_get_commit_state_does_not_mutate_current_branch(self):
+        resp = self.client.post(
+            "/api/v1/commits",
+            json={
+                "state": {"memory": {"step": 1}, "world_state": {}},
+                "message": "main commit",
+            },
+            headers=self.headers,
+        )
+        assert resp.status_code == 200
+        main_hash = resp.json()["hash"]
+
+        resp = self.client.post(
+            "/api/v1/branches",
+            json={"name": "feature"},
+            headers=self.headers,
+        )
+        assert resp.status_code == 200
+
+        resp = self.client.post(
+            "/api/v1/checkout",
+            json={"target": "feature"},
+            headers=self.headers,
+        )
+        assert resp.status_code == 200
+
+        resp = self.client.post(
+            "/api/v1/commits",
+            json={
+                "state": {"memory": {"step": 2}, "world_state": {}},
+                "message": "feature commit",
+            },
+            headers=self.headers,
+        )
+        assert resp.status_code == 200
+
+        resp = self.client.get("/api/v1/branches", headers=self.headers)
+        assert resp.status_code == 200
+        assert resp.json()["current"] == "feature"
+
+        resp = self.client.get(f"/api/v1/commits/{main_hash}", headers=self.headers)
+        assert resp.status_code == 200
+        assert resp.json()["commit"]["hash"] == main_hash
+
+        resp = self.client.get("/api/v1/branches", headers=self.headers)
+        assert resp.status_code == 200
+        assert resp.json()["current"] == "feature"
+
     def test_audit(self):
         resp = self.client.get("/api/v1/audit", headers=self.headers)
         assert resp.status_code == 200

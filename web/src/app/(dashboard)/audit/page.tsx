@@ -1,17 +1,41 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { getDemoData } from "@/lib/api";
+import { api, getDemoData, USE_DEMO_DATA } from "@/lib/api";
 import { truncateHash, formatTimestamp } from "@/lib/utils";
 
 export default function AuditPage() {
-  const entries = getDemoData().audit;
+  const [entries, setEntries] = useState(
+    USE_DEMO_DATA ? getDemoData().audit : []
+  );
   const [search, setSearch] = useState("");
   const [agentFilter, setAgentFilter] = useState<string>("all");
   const [actionFilter, setActionFilter] = useState<string>("all");
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let isMounted = true;
+    api
+      .getAudit()
+      .then((res) => {
+        if (!isMounted) return;
+        setEntries(res.entries);
+      })
+      .catch(() => {
+        if (USE_DEMO_DATA) {
+          setEntries(getDemoData().audit);
+        }
+      })
+      .finally(() => {
+        if (isMounted) setLoading(false);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   const agents = useMemo(
     () => ["all", ...new Set(entries.map((e) => e.agent_id))],
@@ -50,7 +74,7 @@ export default function AuditPage() {
             Audit Log
           </h1>
           <p className="text-sm text-stone-500 mt-1">
-            {entries.length} events recorded
+            {loading ? "Loading audit events..." : `${entries.length} events recorded`}
           </p>
         </div>
         <Button variant="outline" size="sm">

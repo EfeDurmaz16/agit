@@ -12,13 +12,13 @@ mod inner {
     use aes_gcm::aead::generic_array::GenericArray;
     use aes_gcm::aead::rand_core::RngCore;
     use argon2::Argon2;
+    use sha2::{Digest, Sha256};
     use crate::error::{AgitError, Result};
     use crate::state::AgentState;
     use serde_json::Value;
 
-    /// Fixed salt for deterministic key derivation from passphrase.
-    /// In production, each tenant should have a unique salt stored alongside their config.
-    const DEFAULT_SALT: &[u8; 16] = b"agit-enc-v1-salt";
+    /// Legacy fallback salt. Prefer per-context derived salts.
+    const LEGACY_SALT: &[u8; 16] = b"agit-enc-v1-salt";
 
     /// Encrypts and decrypts agent state fields using AES-256-GCM.
     /// Key derivation uses Argon2id (memory-hard KDF) for passphrase-based keys.
@@ -29,8 +29,15 @@ mod inner {
     impl StateEncryptor {
         /// Create a new encryptor from a passphrase/key string.
         /// The key is derived via Argon2id (memory-hard KDF) to resist brute-force attacks.
+        /// Uses a per-context salt derived from the provided context.
         pub fn new(key: &str) -> Self {
-            Self::with_salt(key, DEFAULT_SALT)
+            Self::with_context(key, "default")
+        }
+
+        /// Create a new encryptor scoped to a context (e.g. tenant or agent id).
+        pub fn with_context(key: &str, context: &str) -> Self {
+            let salt = derive_salt(context);
+            Self::with_salt(key, &salt)
         }
 
         /// Create from a passphrase with a custom salt.
@@ -127,6 +134,19 @@ mod inner {
                 _ => Ok(value.clone()), // Not encrypted, pass through
             }
         }
+    }
+
+    fn derive_salt(context: &str) -> [u8; 16] {
+        if context.is_empty() {
+            return *LEGACY_SALT;
+        }
+        let mut hasher = Sha256::new();
+        hasher.update(b"agit-enc-salt:");
+        hasher.update(context.as_bytes());
+        let out = hasher.finalize();
+        let mut salt = [0u8; 16];
+        salt.copy_from_slice(&out[..16]);
+        salt
     }
 }
 

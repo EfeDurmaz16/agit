@@ -41,6 +41,12 @@ router = APIRouter(prefix="/api/v1")
 
 # Tenant-isolated engines
 _engines: dict[str, ExecutionEngine] = {}
+_ENGINE_CACHE_ENABLED = os.environ.get("AGIT_ENGINE_CACHE", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 # Configurable storage root (default: platform-appropriate data dir)
 _STORAGE_ROOT = os.environ.get("AGIT_STORAGE_ROOT", os.path.join(os.path.expanduser("~"), ".agit", "tenants"))
@@ -61,11 +67,15 @@ def _get_engine(tenant_info: dict[str, str]) -> ExecutionEngine:
         raise ValueError(f"Invalid agent_id identifier: {agent_id}")
 
     key = f"{tenant}:{agent_id}"
+    repo_path = os.path.join(_STORAGE_ROOT, tenant)
+    os.makedirs(repo_path, exist_ok=True)
+
+    if not _ENGINE_CACHE_ENABLED:
+        return ExecutionEngine(repo_path=repo_path, agent_id=agent_id)
+
     if key not in _engines:
-        repo_path = os.path.join(_STORAGE_ROOT, tenant)
-        os.makedirs(repo_path, exist_ok=True)
         _engines[key] = ExecutionEngine(repo_path=repo_path, agent_id=agent_id)
-        logger.info("Created engine for tenant=%s agent=%s", tenant, agent_id)
+        logger.info("Created cached engine for tenant=%s agent=%s", tenant, agent_id)
     return _engines[key]
 
 
@@ -115,9 +125,7 @@ async def get_commit_state(
 ) -> CommitWithState:
     """Get state at a specific commit."""
     engine = _get_engine(tenant_info)
-    current = engine.current_branch() or "main"
-    state = engine.checkout(commit_hash)
-    engine.checkout(current)
+    state = engine.get_state_at(commit_hash)
     commits = engine.get_history(500)
     commit_data = next((c for c in commits if c.get("hash") == commit_hash), {})
     return CommitWithState(

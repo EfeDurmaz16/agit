@@ -39,15 +39,31 @@ export interface Branch {
 export interface HealthStatus {
   status: string;
   version: string;
-  uptime: number;
+  uptime?: number;
 }
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
+const API_KEY = process.env.NEXT_PUBLIC_AGIT_API_KEY;
+export const USE_DEMO_DATA =
+  process.env.NEXT_PUBLIC_AGIT_USE_DEMO_DATA === "1";
+
+interface BranchListResponse {
+  branches: Record<string, string>;
+  current?: string | null;
+}
 
 async function fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(options?.headers as Record<string, string> | undefined),
+  };
+  if (API_KEY) {
+    headers["X-API-Key"] = API_KEY;
+  }
+
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...options?.headers },
+    headers,
     ...options,
   });
   if (!res.ok) throw new Error(`API error: ${res.status} ${res.statusText}`);
@@ -63,7 +79,17 @@ export const api = {
     ),
   getDiff: (h1: string, h2: string) =>
     fetchApi<StateDiff>(`/diff?hash1=${h1}&hash2=${h2}`),
-  getBranches: () => fetchApi<{ branches: Branch[] }>("/branches"),
+  getBranches: async () => {
+    const data = await fetchApi<BranchListResponse>("/branches");
+    const branches: Branch[] = Object.entries(data.branches || {}).map(
+      ([name, hash]) => ({
+        name,
+        hash,
+        is_current: data.current === name,
+      })
+    );
+    return { branches };
+  },
   getAudit: (limit = 100) =>
     fetchApi<{ entries: AuditEntry[] }>(`/audit?limit=${limit}`),
   getHealth: () => fetchApi<HealthStatus>("/health"),

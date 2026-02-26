@@ -1,6 +1,17 @@
 """agit - Git-like version control for AI agents."""
 from __future__ import annotations
 
+import os
+
+# Production default: fail closed when native core is unavailable.
+# Set AGIT_ALLOW_STUBS=1 only for local development/tests.
+_ALLOW_STUBS = os.environ.get("AGIT_ALLOW_STUBS", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+
 # Attempt to import the native Rust extension. Fall back to pure-Python stubs
 # so the package remains importable even when the native wheel is not yet built.
 try:
@@ -13,7 +24,13 @@ try:
     PyStateDiff = getattr(agit_core, "PyStateDiff", None) or agit_core.StateDiff
     PyDiffEntry = getattr(agit_core, "PyDiffEntry", None) or agit_core.DiffEntry
     NATIVE_AVAILABLE = True
-except (ImportError, AttributeError):
+except (ImportError, AttributeError) as exc:
+    if not _ALLOW_STUBS:
+        raise ImportError(
+            "agit-core native module is required in this environment. "
+            "Set AGIT_ALLOW_STUBS=1 only for local development/testing."
+        ) from exc
+
     import warnings
 
     from agit._stubs import (  # type: ignore[import]

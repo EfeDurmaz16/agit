@@ -1,9 +1,9 @@
 /**
  * AgitClient – high-level ergonomic wrapper around the agit native bindings.
  *
- * Falls back to a pure-TypeScript in-memory implementation when the native
- * `@agit/core` module is not available (e.g. during unit tests without a
- * compiled binary).
+ * Production default is fail-closed when native `@agit/core` is unavailable.
+ * A pure-TypeScript in-memory fallback is available only when explicitly
+ * enabled (e.g. `forcePureTs` in tests or `AGIT_ALLOW_STUBS=1`).
  */
 
 import type {
@@ -26,12 +26,12 @@ import { ActionType, ChangeType, MergeStrategy } from "./types.js";
 /** Shape of the native JsRepository exposed by napi-rs. */
 interface NativeRepository {
   commit(
-    memory: unknown,
-    world_state: unknown,
+    memory_json: string,
+    world_state_json: string,
     message: string,
     action_type: string,
     cost?: number,
-    metadata?: unknown
+    metadata_json?: string
   ): Promise<string>;
   branch(name: string, from?: string): Promise<void>;
   checkout(target: string): Promise<AgentState>;
@@ -58,7 +58,32 @@ try {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   nativeModule = require("@agit/core") as NativeModule;
 } catch {
-  // Native module not available – pure-TS fallback will be used.
+  // Native module not available.
+}
+
+function envFlag(name: string): boolean {
+  if (typeof process === "undefined") return false;
+  const raw = process.env?.[name];
+  if (!raw) return false;
+  return ["1", "true", "yes", "on"].includes(raw.trim().toLowerCase());
+}
+
+function parseJsonValue(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
+function normalizeState(state: AgentState): AgentState {
+  return {
+    ...state,
+    memory: parseJsonValue(state.memory),
+    world_state: parseJsonValue(state.world_state),
+    metadata: parseJsonValue(state.metadata),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -94,8 +119,8 @@ class PureTsRepository implements NativeRepository {
   }
 
   async commit(
-    memory: unknown,
-    world_state: unknown,
+    memory_json: string,
+    world_state_json: string,
     message: string,
     action_type: string,
     cost?: number,
@@ -105,12 +130,15 @@ class PureTsRepository implements NativeRepository {
     const parentHash = this.resolveHead();
     const parent_hashes = parentHash ? [parentHash] : [];
 
+    const memory = parseJsonValue(memory_json);
+    const world_state = parseJsonValue(world_state_json);
+
     const state: AgentState = {
       memory,
       world_state: world_state ?? {},
       timestamp: now,
       cost: cost ?? 0,
-      metadata,
+      metadata: parseJsonValue(metadata),
     };
 
     const treeHash = sha256Sync(JSON.stringify(state));
@@ -208,8 +236,8 @@ class PureTsRepository implements NativeRepository {
 
     const currentBranch = this._currentBranch ?? "HEAD";
     return this.commit(
-      mergedState.memory,
-      mergedState.world_state,
+      JSON.stringify(mergedState.memory),
+      JSON.stringify(mergedState.world_state),
       `merge branch '${branch}' into '${currentBranch}'`,
       ActionType.Merge,
       mergedState.cost,
@@ -250,8 +278,8 @@ class PureTsRepository implements NativeRepository {
     const entry = this.commits.get(toHash);
     if (!entry) throw new Error(`Object not found: ${toHash}`);
     await this.commit(
-      entry.state.memory,
-      entry.state.world_state,
+      JSON.stringify(entry.state.memory),
+      JSON.stringify(entry.state.world_state),
       `revert to ${toHash.slice(0, 8)}`,
       ActionType.Rollback,
       entry.state.cost,
@@ -373,19 +401,26 @@ export class AgitClient {
   /**
    * Open (or initialise) an agit repository at `repoPath`.
    *
-   * If the native `@agit/core` binary is not available the client will
-   * automatically use the pure-TypeScript in-memory fallback.
+   * Production default is fail-closed: if the native `@agit/core` binary is
+   * missing, this throws unless fallback is explicitly enabled.
+   * Enable fallback with `forcePureTs: true` (tests) or `AGIT_ALLOW_STUBS=1`.
    */
   static async open(
     repoPath: string,
     options: AgitClientOptions = {}
   ): Promise<AgitClient> {
-    const usePureTs = options.forcePureTs || nativeModule === null;
+    const allowStubs = options.forcePureTs || envFlag("AGIT_ALLOW_STUBS");
+    const usePureTs = options.forcePureTs || (nativeModule === null && allowStubs);
 
     let repo: NativeRepository;
     if (usePureTs) {
       repo = new PureTsRepository();
     } else {
+      if (nativeModule === null) {
+        throw new Error(
+          "Native @agit/core module is required. Set AGIT_ALLOW_STUBS=1 only for local development/testing."
+        );
+      }
       repo = await nativeModule!.JsRepository.open(repoPath);
     }
 
@@ -408,12 +443,12 @@ export class AgitClient {
     } = options;
 
     return this.repo.commit(
-      memory,
-      world_state,
+      JSON.stringify(memory),
+      JSON.stringify(world_state),
       message,
       typeof action_type === "string" ? action_type : action_type,
       cost,
-      metadata
+      metadata === undefined ? undefined : JSON.stringify(metadata)
     );
   }
 
@@ -430,7 +465,7 @@ export class AgitClient {
    * @returns The agent state at the checked-out point.
    */
   async checkout(target: string): Promise<AgentState> {
-    return this.repo.checkout(target);
+    return normalizeState(await this.repo.checkout(target));
   }
 
   /**
@@ -463,14 +498,14 @@ export class AgitClient {
    * @returns The restored agent state.
    */
   async revert(toHash: string): Promise<AgentState> {
-    return this.repo.revert(toHash);
+    return normalizeState(await this.repo.revert(toHash));
   }
 
   /**
    * Retrieve the agent state stored at a specific commit.
    */
   async getState(hash: string): Promise<AgentState> {
-    return this.repo.getState(hash);
+    return normalizeState(await this.repo.getState(hash));
   }
 
   /**

@@ -52,7 +52,6 @@ jobs:
 
       - name: Build native extension
         run: cd crates/agit-python && maturin develop
-        continue-on-error: true
         id: native_build
 
       - name: Install Python package
@@ -63,6 +62,9 @@ jobs:
 
       - name: Mypy
         run: mypy python/agit/ --ignore-missing-imports
+
+      - name: Contract checks
+        run: python scripts/check_contracts.py
 
       - name: Pytest
         run: pytest tests/ -v --tb=short
@@ -87,7 +89,6 @@ jobs:
         run: |
           npm install
           npm run build
-        continue-on-error: true
         id: native_addon
 
       - name: Install TS SDK deps
@@ -98,4 +99,3 @@ jobs:
 
       - name: Test
         run: cd ts-sdk && npm test
-        continue-on-error: true

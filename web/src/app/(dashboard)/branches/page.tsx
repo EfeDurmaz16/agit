@@ -1,13 +1,38 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { getDemoData } from "@/lib/api";
+import { api, getDemoData, USE_DEMO_DATA } from "@/lib/api";
 import { truncateHash } from "@/lib/utils";
 
 export default function BranchesPage() {
-  const data = getDemoData();
-  const branches = data.branches;
+  const [branches, setBranches] = useState(
+    USE_DEMO_DATA ? getDemoData().branches : []
+  );
+  const graphCommits = USE_DEMO_DATA ? getDemoData().commits : [];
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let isMounted = true;
+    api
+      .getBranches()
+      .then((res) => {
+        if (!isMounted) return;
+        setBranches(res.branches);
+      })
+      .catch(() => {
+        if (USE_DEMO_DATA) {
+          setBranches(getDemoData().branches);
+        }
+      })
+      .finally(() => {
+        if (isMounted) setLoading(false);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   return (
     <div>
@@ -16,7 +41,7 @@ export default function BranchesPage() {
           Branches
         </h1>
         <p className="text-sm text-stone-500 mt-1">
-          {branches.length} branches in repository
+          {loading ? "Loading branches..." : `${branches.length} branches in repository`}
         </p>
       </div>
 
@@ -114,7 +139,7 @@ export default function BranchesPage() {
             <div className="flex items-center gap-2">
               <span className="text-emerald-600 font-bold">*</span>
               <span className="text-stone-300">|</span>
-              <span className="text-stone-400">{truncateHash(data.commits[1]?.hash || "")}</span>
+              <span className="text-stone-400">{truncateHash(graphCommits[1]?.hash || "")}</span>
               <span className="text-stone-700">calling weather API</span>
             </div>
             <div className="flex items-center gap-2 ml-3">
@@ -127,7 +152,7 @@ export default function BranchesPage() {
             <div className="flex items-center gap-2">
               <span className="text-emerald-600 font-bold">*</span>
               <span className="text-stone-300">|</span>
-              <span className="text-stone-400">{truncateHash(data.commits[2]?.hash || "")}</span>
+              <span className="text-stone-400">{truncateHash(graphCommits[2]?.hash || "")}</span>
               <span className="text-stone-700">user input received</span>
             </div>
             <div className="flex items-center gap-2 ml-3">

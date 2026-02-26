@@ -1,10 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { getDemoData } from "@/lib/api";
+import { api, getDemoData, USE_DEMO_DATA } from "@/lib/api";
 import { truncateHash, formatTimestamp } from "@/lib/utils";
 
 const actionBadgeVariant = (action: string) => {
@@ -15,9 +15,33 @@ const actionBadgeVariant = (action: string) => {
 };
 
 export default function CommitsPage() {
-  const commits = getDemoData().commits;
+  const [commits, setCommits] = useState(
+    USE_DEMO_DATA ? getDemoData().commits : []
+  );
   const [expandedHash, setExpandedHash] = useState<string | null>(null);
   const [filter, setFilter] = useState<string>("all");
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let isMounted = true;
+    api
+      .getCommits()
+      .then((res) => {
+        if (!isMounted) return;
+        setCommits(res.commits);
+      })
+      .catch(() => {
+        if (USE_DEMO_DATA) {
+          setCommits(getDemoData().commits);
+        }
+      })
+      .finally(() => {
+        if (isMounted) setLoading(false);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   const actionTypes = ["all", ...new Set(commits.map((c) => c.action_type))];
   const filtered =
@@ -31,7 +55,7 @@ export default function CommitsPage() {
             Commits
           </h1>
           <p className="text-sm text-stone-500 mt-1">
-            {commits.length} commits across all branches
+            {loading ? "Loading commits..." : `${commits.length} commits across all branches`}
           </p>
         </div>
       </div>

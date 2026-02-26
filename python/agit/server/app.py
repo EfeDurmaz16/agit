@@ -7,7 +7,7 @@ import os
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
-from .middleware import RateLimitMiddleware
+from .middleware import RateLimitMiddleware, RedisRateLimitMiddleware
 from .routes import router
 
 logger = logging.getLogger("agit.server")
@@ -35,8 +35,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Rate limiting
-app.add_middleware(RateLimitMiddleware, max_requests=100, window_seconds=60)
+# Rate limiting (distributed if Redis is configured)
+_redis_url = os.environ.get("AGIT_REDIS_URL", "").strip()
+if _redis_url:
+    try:
+        app.add_middleware(
+            RedisRateLimitMiddleware,
+            redis_url=_redis_url,
+            max_requests=100,
+            window_seconds=60,
+        )
+        logger.info("Enabled Redis rate limiting via AGIT_REDIS_URL")
+    except RuntimeError:
+        logger.warning("Redis rate limiting unavailable; falling back to in-memory limiter", exc_info=True)
+        app.add_middleware(RateLimitMiddleware, max_requests=100, window_seconds=60)
+else:
+    app.add_middleware(RateLimitMiddleware, max_requests=100, window_seconds=60)
 
 
 # Security headers middleware

@@ -9,11 +9,16 @@ import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 logger = logging.getLogger("agit.swarm.orchestrator")
 
 from agit.engine.executor import ExecutionEngine
+
+SubtaskExecutor = Callable[
+    [Any, str],
+    Awaitable[dict[str, Any]] | dict[str, Any],
+]
 
 
 class DistributedLock:
@@ -168,9 +173,14 @@ class SwarmOrchestrator:
         ))
     """
 
-    def __init__(self, repo_path: str) -> None:
+    def __init__(
+        self,
+        repo_path: str,
+        agent_executor: SubtaskExecutor | None = None,
+    ) -> None:
         self._repo_path = repo_path
         self._engine = ExecutionEngine(repo_path=repo_path, agent_id="orchestrator")
+        self._agent_executor = agent_executor
 
     # ------------------------------------------------------------------
     # Public API
@@ -369,10 +379,8 @@ class SwarmOrchestrator:
     async def _execute_subtask(self, subtask: SubTask, agent_id: str) -> dict[str, Any]:
         """Execute a single sub-task and commit its result.
 
-        In production, replace the body with actual agent invocation.
-        The current implementation records the sub-task as a stub result so
-        the orchestration logic and audit trail work end-to-end without
-        requiring live agents.
+        If ``agent_executor`` is configured, it is used as the execution backend.
+        Otherwise, a deterministic stub is used for local development.
 
         Parameters
         ----------
@@ -388,15 +396,29 @@ class SwarmOrchestrator:
         """
         subtask.status = "in_progress"
 
-        # Simulate async work (replace with actual agent call)
-        await asyncio.sleep(0)
-
-        result: dict[str, Any] = {
-            "output": f"Completed: {subtask.description}",
-            "agent_id": agent_id,
-            "subtask_id": subtask.id,
-            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        }
+        if self._agent_executor is not None:
+            maybe_result = self._agent_executor(subtask, agent_id)
+            result = await maybe_result if asyncio.iscoroutine(maybe_result) else maybe_result
+            if not isinstance(result, dict):
+                result = {"output": result}
+            result = {
+                **result,
+                "agent_id": result.get("agent_id", agent_id),
+                "subtask_id": result.get("subtask_id", subtask.id),
+                "timestamp": result.get(
+                    "timestamp",
+                    time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                ),
+            }
+        else:
+            # Simulate async work for local development path.
+            await asyncio.sleep(0)
+            result = {
+                "output": f"Completed: {subtask.description}",
+                "agent_id": agent_id,
+                "subtask_id": subtask.id,
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }
 
         # Persist result as an agit commit
         state = {

@@ -2,12 +2,20 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from typing import Any, Callable
 
 from agit.engine.pii_masker import PiiMasker
 
 logger = logging.getLogger("agit.engine")
+
+_ALLOW_STUBS = os.environ.get("AGIT_ALLOW_STUBS", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 try:
     import agit_core  # type: ignore[import]
@@ -16,7 +24,13 @@ try:
     _PyAgentState = getattr(agit_core, "PyAgentState", None) or agit_core.AgentState
     _PyCommit = getattr(agit_core, "PyCommit", None) or agit_core.Commit
     _NATIVE = True
-except (ImportError, AttributeError):
+except (ImportError, AttributeError) as exc:
+    if not _ALLOW_STUBS:
+        raise ImportError(
+            "agit-core native module is required in this environment. "
+            "Set AGIT_ALLOW_STUBS=1 only for local development/testing."
+        ) from exc
+
     from agit._stubs import PyRepository as _PyRepository  # type: ignore[assignment]
     from agit._stubs import PyAgentState as _PyAgentState  # type: ignore[assignment]
     from agit._stubs import PyCommit as _PyCommit  # type: ignore[assignment]
@@ -155,6 +169,11 @@ class ExecutionEngine:
         except Exception:
             logger.warning("Failed to retrieve current state", exc_info=True)
         return None
+
+    def get_state_at(self, commit_hash: str) -> dict[str, Any]:
+        """Read state from a specific commit hash without mutating HEAD."""
+        state_obj = self._repo.get_state(commit_hash)
+        return self._state_to_dict(state_obj)
 
     def commit_state(
         self,

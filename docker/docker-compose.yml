@@ -20,7 +20,13 @@ services:
       target: runtime
     image: agit:latest
     container_name: agit-api
-    command: python -m agit.integrations.mcp_server --host 0.0.0.0 --port 8000
+    command: >
+      python -m agit.integrations.mcp_server
+      --repo /data/agit.db
+      --agent mcp-server
+      --transport sse
+      --host 0.0.0.0
+      --port 8000
     ports:
       - "8000:8000"
     volumes:
@@ -30,7 +36,7 @@ services:
       AGIT_AGENT_ID: mcp-server
       AGIT_LOG_LEVEL: INFO
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      test: ["CMD", "python", "-c", "import socket; s=socket.create_connection(('localhost', 8000), 2); s.close()"]
       interval: 30s
       timeout: 10s
       retries: 3

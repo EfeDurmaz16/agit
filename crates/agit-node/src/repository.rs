@@ -44,6 +44,7 @@ impl JsRepository {
         message: String,
         action_type: String,
         cost: Option<f64>,
+        metadata_json: Option<String>,
     ) -> Result<String> {
         let memory: serde_json::Value = serde_json::from_str(&memory_json)
             .map_err(|e| Error::new(Status::InvalidArg, format!("invalid memory JSON: {}", e)))?;
@@ -59,6 +60,15 @@ impl JsRepository {
         let mut state = AgentState::new(memory, world_state);
         if let Some(c) = cost {
             state.cost = c;
+        }
+        if let Some(metadata_raw) = metadata_json {
+            let metadata_val = serde_json::from_str(&metadata_raw).map_err(|e| {
+                Error::new(
+                    Status::InvalidArg,
+                    format!("invalid metadata JSON: {}", e),
+                )
+            })?;
+            state.metadata = metadata_val;
         }
 
         let mut repo = self.inner.lock().await;

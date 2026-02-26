@@ -141,6 +141,26 @@ class TestHistoryRetrieval:
         assert current is not None
         assert current["memory"]["step"] == 0
 
+    def test_get_state_at_returns_historical_state_without_head_mutation(
+        self, engine: ExecutionEngine, base_state: dict[str, Any]
+    ) -> None:
+        h1 = engine.commit_state(base_state, "v1", "checkpoint")
+        engine.branch("feature")
+        engine.checkout("feature")
+        h2 = engine.commit_state(
+            {
+                **base_state,
+                "memory": {**base_state["memory"], "step": 2},
+            },
+            "v2",
+            "checkpoint",
+        )
+        assert h1 != h2
+
+        state = engine.get_state_at(h1)
+        assert state["memory"]["step"] == 0
+        assert engine.current_branch() == "feature"
+
 
 class TestErrorHandling:
     """Test error handling during execution."""

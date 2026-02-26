@@ -24,6 +24,7 @@ use crate::types::ObjectType;
 #[cfg(feature = "postgres")]
 pub struct PostgresStorage {
     client: Arc<Client>,
+    namespace: String,
 }
 
 #[cfg(feature = "postgres")]
@@ -31,6 +32,13 @@ impl PostgresStorage {
     /// Connect to a PostgreSQL database using a connection string, e.g.
     /// `"host=localhost user=postgres dbname=agit"`.
     pub async fn new(connection_str: &str) -> Result<Self> {
+        Self::new_scoped(connection_str, "").await
+    }
+
+    /// Connect to PostgreSQL with a storage namespace.
+    ///
+    /// The namespace is used to isolate refs and objects across tenants.
+    pub async fn new_scoped(connection_str: &str, namespace: &str) -> Result<Self> {
         let (client, connection) = tokio_postgres::connect(connection_str, NoTls)
             .await
             .map_err(|e| AgitError::Storage(e.to_string()))?;
@@ -45,9 +53,48 @@ impl PostgresStorage {
 
         let storage = PostgresStorage {
             client: Arc::new(client),
+            namespace: namespace.to_string(),
         };
         storage.initialize().await?;
         Ok(storage)
+    }
+
+    fn scope_hash(&self, hash: &str) -> String {
+        if self.namespace.is_empty() {
+            hash.to_string()
+        } else {
+            format!("{}:{}", self.namespace, hash)
+        }
+    }
+
+    fn unscope_hash(&self, scoped: &str) -> String {
+        if self.namespace.is_empty() {
+            scoped.to_string()
+        } else {
+            scoped
+                .strip_prefix(&format!("{}:", self.namespace))
+                .unwrap_or(scoped)
+                .to_string()
+        }
+    }
+
+    fn scope_ref(&self, name: &str) -> String {
+        if self.namespace.is_empty() {
+            name.to_string()
+        } else {
+            format!("{}:{}", self.namespace, name)
+        }
+    }
+
+    fn unscope_ref(&self, scoped: &str) -> String {
+        if self.namespace.is_empty() {
+            scoped.to_string()
+        } else {
+            scoped
+                .strip_prefix(&format!("{}:", self.namespace))
+                .unwrap_or(scoped)
+                .to_string()
+        }
     }
 }
 
@@ -55,7 +102,7 @@ impl PostgresStorage {
 #[async_trait]
 impl StorageBackend for PostgresStorage {
     async fn initialize(&self) -> Result<()> {
-        let client = self.client;
+        let client = &self.client;
         client
             .batch_execute(
                 "
@@ -98,14 +145,15 @@ impl StorageBackend for PostgresStorage {
     }
 
     async fn put_object(&self, hash: &str, obj_type: ObjectType, data: &[u8]) -> Result<()> {
-        let client = self.client;
+        let client = &self.client;
         let type_str = obj_type.to_string();
+        let scoped_hash = self.scope_hash(hash);
         client
             .execute(
                 "INSERT INTO objects (hash, type, data)
                  VALUES ($1, $2, $3)
                  ON CONFLICT (hash) DO NOTHING",
-                &[&hash, &type_str, &data],
+                &[&scoped_hash, &type_str, &data],
             )
             .await
             .map_err(|e| AgitError::Storage(e.to_string()))?;
@@ -113,11 +161,12 @@ impl StorageBackend for PostgresStorage {
     }
 
     async fn get_object(&self, hash: &str) -> Result<Option<Vec<u8>>> {
-        let client = self.client;
+        let client = &self.client;
+        let scoped_hash = self.scope_hash(hash);
         let rows = client
             .query(
                 "SELECT data FROM objects WHERE hash = $1",
-                &[&hash],
+                &[&scoped_hash],
             )
             .await
             .map_err(|e| AgitError::Storage(e.to_string()))?;
@@ -125,11 +174,12 @@ impl StorageBackend for PostgresStorage {
     }
 
     async fn has_object(&self, hash: &str) -> Result<bool> {
-        let client = self.client;
+        let client = &self.client;
+        let scoped_hash = self.scope_hash(hash);
         let rows = client
             .query(
                 "SELECT 1 FROM objects WHERE hash = $1 LIMIT 1",
-                &[&hash],
+                &[&scoped_hash],
             )
             .await
             .map_err(|e| AgitError::Storage(e.to_string()))?;
@@ -137,14 +187,16 @@ impl StorageBackend for PostgresStorage {
     }
 
     async fn set_ref(&self, name: &str, hash: &str) -> Result<()> {
-        let client = self.client;
+        let client = &self.client;
+        let scoped_name = self.scope_ref(name);
+        let scoped_hash = self.scope_hash(hash);
         client
             .execute(
                 "INSERT INTO refs (name, target, agent_id)
                  VALUES ($1, $2, '')
                  ON CONFLICT (name, agent_id)
                  DO UPDATE SET target = EXCLUDED.target, updated_at = NOW()",
-                &[&name, &hash],
+                &[&scoped_name, &scoped_hash],
             )
             .await
             .map_err(|e| AgitError::Storage(e.to_string()))?;
@@ -152,19 +204,22 @@ impl StorageBackend for PostgresStorage {
     }
 
     async fn get_ref(&self, name: &str) -> Result<Option<String>> {
-        let client = self.client;
+        let client = &self.client;
+        let scoped_name = self.scope_ref(name);
         let rows = client
             .query(
                 "SELECT target FROM refs WHERE name = $1 AND agent_id = ''",
-                &[&name],
+                &[&scoped_name],
             )
             .await
             .map_err(|e| AgitError::Storage(e.to_string()))?;
-        Ok(rows.first().map(|row| row.get::<_, String>(0)))
+        Ok(rows
+            .first()
+            .map(|row| self.unscope_hash(&row.get::<_, String>(0))))
     }
 
     async fn list_refs(&self) -> Result<HashMap<String, String>> {
-        let client = self.client;
+        let client = &self.client;
         let rows = client
             .query(
                 "SELECT name, target FROM refs WHERE agent_id = ''",
@@ -174,17 +229,26 @@ impl StorageBackend for PostgresStorage {
             .map_err(|e| AgitError::Storage(e.to_string()))?;
         let mut map = HashMap::new();
         for row in rows {
-            map.insert(row.get::<_, String>(0), row.get::<_, String>(1));
+            let scoped_name: String = row.get(0);
+            if !self.namespace.is_empty() && !scoped_name.starts_with(&format!("{}:", self.namespace)) {
+                continue;
+            }
+            let scoped_target: String = row.get(1);
+            map.insert(
+                self.unscope_ref(&scoped_name),
+                self.unscope_hash(&scoped_target),
+            );
         }
         Ok(map)
     }
 
     async fn delete_ref(&self, name: &str) -> Result<bool> {
-        let client = self.client;
+        let client = &self.client;
+        let scoped_name = self.scope_ref(name);
         let count = client
             .execute(
                 "DELETE FROM refs WHERE name = $1 AND agent_id = ''",
-                &[&name],
+                &[&scoped_name],
             )
             .await
             .map_err(|e| AgitError::Storage(e.to_string()))?;
@@ -192,12 +256,17 @@ impl StorageBackend for PostgresStorage {
     }
 
     async fn append_log(&self, entry: &LogEntry) -> Result<()> {
-        let client = self.client;
-        let details: Option<serde_json::Value> = entry.details.clone();
+        let client = &self.client;
+        let details_json: Option<String> = entry
+            .details
+            .as_ref()
+            .map(|v| serde_json::to_string(v))
+            .transpose()
+            .map_err(|e| AgitError::Storage(e.to_string()))?;
         client
             .execute(
                 "INSERT INTO logs (id, timestamp, agent_id, action, message, commit_hash, details, level)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+                 VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)",
                 &[
                     &entry.id,
                     &entry.timestamp,
@@ -205,7 +274,7 @@ impl StorageBackend for PostgresStorage {
                     &entry.action,
                     &entry.message,
                     &entry.commit_hash,
-                    &details,
+                    &details_json,
                     &entry.level,
                 ],
             )
@@ -215,7 +284,7 @@ impl StorageBackend for PostgresStorage {
     }
 
     async fn query_logs(&self, filter: &LogFilter) -> Result<Vec<LogEntry>> {
-        let client = self.client;
+        let client = &self.client;
 
         // Build a parameterised query dynamically.  We use $1, $2, … style
         // placeholders.  Collect the actual parameter values as trait objects
@@ -296,36 +365,56 @@ impl StorageBackend for PostgresStorage {
 
         let entries = rows
             .into_iter()
-            .map(|row| LogEntry {
-                id: row.get(0),
-                timestamp: row.get(1),
-                agent_id: row.get(2),
-                action: row.get(3),
-                message: row.get(4),
-                commit_hash: row.get(5),
-                details: row.get(6),
-                level: row.get(7),
+            .map(|row| -> Result<LogEntry> {
+                let details_raw: Option<String> = row.get(6);
+                let details = match details_raw {
+                    Some(s) => Some(
+                        serde_json::from_str(&s)
+                            .map_err(|e| AgitError::Storage(e.to_string()))?,
+                    ),
+                    None => None,
+                };
+                Ok(LogEntry {
+                    id: row.get(0),
+                    timestamp: row.get(1),
+                    agent_id: row.get(2),
+                    action: row.get(3),
+                    message: row.get(4),
+                    commit_hash: row.get(5),
+                    details,
+                    level: row.get(7),
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
 
         Ok(entries)
     }
 
     async fn delete_object(&self, hash: &str) -> Result<bool> {
-        let client = self.client;
+        let client = &self.client;
+        let scoped_hash = self.scope_hash(hash);
         let count = client
-            .execute("DELETE FROM objects WHERE hash = $1", &[&hash])
+            .execute("DELETE FROM objects WHERE hash = $1", &[&scoped_hash])
             .await
             .map_err(|e| AgitError::Storage(e.to_string()))?;
         Ok(count > 0)
     }
 
     async fn list_objects(&self) -> Result<Vec<String>> {
-        let client = self.client;
+        let client = &self.client;
         let rows = client
             .query("SELECT hash FROM objects", &[])
             .await
             .map_err(|e| AgitError::Storage(e.to_string()))?;
-        Ok(rows.iter().map(|r| r.get(0)).collect())
+        let mut objects = Vec::new();
+        for row in rows {
+            let scoped_hash: String = row.get(0);
+            if self.namespace.is_empty()
+                || scoped_hash.starts_with(&format!("{}:", self.namespace))
+            {
+                objects.push(self.unscope_hash(&scoped_hash));
+            }
+        }
+        Ok(objects)
     }
 }

@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use chrono::Utc;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::error::{AgitError, Result};
@@ -55,7 +56,7 @@ impl Repository {
     /// Set an encryption key to encrypt/decrypt agent state fields at rest.
     #[cfg(feature = "encryption")]
     pub fn set_encryption_key(&mut self, key: &str) {
-        self.encryptor = Some(StateEncryptor::new(key));
+        self.encryptor = Some(StateEncryptor::with_context(key, &self.agent_id));
     }
 
     /// Commit agent state, returning the commit hash.
@@ -510,18 +511,72 @@ impl Repository {
         message: &str,
         commit_hash: Option<&str>,
     ) -> Result<()> {
+        let mut filter = LogFilter::default();
+        filter.agent_id = Some(self.agent_id.clone());
+        filter.limit = Some(1);
+        let prev_hash = self
+            .storage
+            .query_logs(&filter)
+            .await?
+            .first()
+            .and_then(|e| e.details.as_ref())
+            .and_then(|d| d.get("integrity_hash"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let timestamp = Utc::now().to_rfc3339();
+        let id = Uuid::new_v4().to_string();
+        let chain_hash = compute_audit_hash(
+            &id,
+            &timestamp,
+            &self.agent_id,
+            action,
+            message,
+            commit_hash.unwrap_or(""),
+            prev_hash.as_deref(),
+        );
+
         let entry = LogEntry {
-            id: Uuid::new_v4().to_string(),
-            timestamp: Utc::now().to_rfc3339(),
+            id,
+            timestamp,
             agent_id: self.agent_id.clone(),
             action: action.to_string(),
             message: message.to_string(),
             commit_hash: commit_hash.map(|s| s.to_string()),
-            details: None,
+            details: Some(serde_json::json!({
+                "integrity_hash": chain_hash,
+                "prev_integrity_hash": prev_hash,
+            })),
             level: "info".to_string(),
         };
         self.storage.append_log(&entry).await
     }
+}
+
+fn compute_audit_hash(
+    id: &str,
+    timestamp: &str,
+    agent_id: &str,
+    action: &str,
+    message: &str,
+    commit_hash: &str,
+    prev_hash: Option<&str>,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(id.as_bytes());
+    hasher.update(b"|");
+    hasher.update(timestamp.as_bytes());
+    hasher.update(b"|");
+    hasher.update(agent_id.as_bytes());
+    hasher.update(b"|");
+    hasher.update(action.as_bytes());
+    hasher.update(b"|");
+    hasher.update(message.as_bytes());
+    hasher.update(b"|");
+    hasher.update(commit_hash.as_bytes());
+    hasher.update(b"|");
+    hasher.update(prev_hash.unwrap_or("").as_bytes());
+    format!("{:x}", hasher.finalize())
 }
 
 #[cfg(test)]

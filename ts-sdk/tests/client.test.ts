@@ -17,6 +17,33 @@ async function openRepo(): Promise<AgitClient> {
   return AgitClient.open("/tmp/agit-test", { forcePureTs: true });
 }
 
+describe("AgitClient open() safety defaults", () => {
+  it("fails closed without native bindings unless fallback is explicit", async () => {
+    const previous = process.env.AGIT_ALLOW_STUBS;
+    delete process.env.AGIT_ALLOW_STUBS;
+    await expect(AgitClient.open("/tmp/agit-test-no-fallback")).rejects.toThrow(
+      /Native @agit\/core module is required/
+    );
+    if (previous === undefined) {
+      delete process.env.AGIT_ALLOW_STUBS;
+    } else {
+      process.env.AGIT_ALLOW_STUBS = previous;
+    }
+  });
+
+  it("allows explicit fallback via env flag", async () => {
+    const previous = process.env.AGIT_ALLOW_STUBS;
+    process.env.AGIT_ALLOW_STUBS = "1";
+    const client = await AgitClient.open("/tmp/agit-test-fallback");
+    expect(client.status().current_branch).toBe("main");
+    if (previous === undefined) {
+      delete process.env.AGIT_ALLOW_STUBS;
+    } else {
+      process.env.AGIT_ALLOW_STUBS = previous;
+    }
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
