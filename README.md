@@ -1,3 +1,5 @@
+[![CI](https://github.com/anthropics/agit/actions/workflows/ci.yml/badge.svg)](https://github.com/anthropics/agit/actions/workflows/ci.yml)
+
 # AgentGit (agit)
 
 Git-like version control for AI agents. Every agent action is a commit -- diffable, revertable, auditable.

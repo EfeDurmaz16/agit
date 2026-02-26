@@ -70,6 +70,25 @@ services:
       - agit-net
 
   # ---------------------------------------------------------------------------
+  # agit REST API server
+  # ---------------------------------------------------------------------------
+  agit-rest-api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.api
+    ports:
+      - "8001:8000"
+    environment:
+      - AGIT_LOG_LEVEL=info
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - agit-net
+
+  # ---------------------------------------------------------------------------
   # PostgreSQL – optional persistent storage backend
   # (agit will use this when AGIT_PG_URL is set)
   # ---------------------------------------------------------------------------

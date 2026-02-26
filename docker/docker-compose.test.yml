@@ -1,0 +1,18 @@
+version: "3.8"
+
+services:
+  postgres-test:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: agit_test
+      POSTGRES_PASSWORD: agit_test_password
+      POSTGRES_DB: agit_test
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agit_test"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+    tmpfs:
+      - /var/lib/postgresql/data

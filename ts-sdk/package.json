@@ -1,14 +1,30 @@
 {
   "name": "@agit/sdk",
   "version": "0.1.0",
+  "description": "TypeScript SDK for AgentGit - Git-like version control for AI agents",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/anthropics/agit.git",
+    "directory": "ts-sdk"
+  },
+  "keywords": ["ai", "agents", "version-control", "git", "typescript", "sdk"],
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "dist/**/*.js.map"
+  ],
   "scripts": {
     "build": "tsc",
     "test": "vitest"
   },
-  "dependencies": {
-    "@agit/core": "file:../crates/agit-node"
+  "optionalDependencies": {
+    "@agit/core": "^0.1.0"
   },
   "devDependencies": {
     "@types/node": "^22",
