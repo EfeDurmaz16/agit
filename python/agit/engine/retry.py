@@ -1,12 +1,15 @@
 """RetryEngine – branch-per-retry with exponential backoff."""
 from __future__ import annotations
 
+import logging
 import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from agit.engine.executor import ExecutionEngine
+
+logger = logging.getLogger("agit.engine.retry")
 
 
 @dataclass
@@ -123,14 +126,15 @@ class RetryEngine:
                     self._executor.branch(branch_name, from_ref=pre_state_hash)
                     self._executor.checkout(branch_name)
                 except Exception:
-                    # Branch creation failed – restore base branch and continue
+                    logger.warning("Failed to create retry branch %s", branch_name, exc_info=True)
                     try:
                         self._executor.checkout(base_branch)
                     except Exception:
-                        pass
+                        logger.warning("Failed to restore base branch %s", base_branch, exc_info=True)
 
                 # Exponential backoff
                 delay = self._base_delay * (2 ** (attempt - 1))
+                logger.info("Retry attempt %d/%d for '%s' (delay=%.1fs)", attempt, self._max_retries, message, delay)
                 time.sleep(delay)
 
             start_ts = time.monotonic()
@@ -154,8 +158,9 @@ class RetryEngine:
                     try:
                         self._executor.checkout(base_branch)
                         self._executor.merge(branch_name, strategy="theirs")
+                        logger.info("Retry succeeded on attempt %d, merged %s -> %s", attempt, branch_name, base_branch)
                     except Exception:
-                        pass
+                        logger.warning("Failed to merge retry branch %s back to %s", branch_name, base_branch, exc_info=True)
 
                 return result, history
 
@@ -173,13 +178,16 @@ class RetryEngine:
                     )
                 )
 
+                logger.warning("Attempt %d failed for '%s': %s", attempt, message, exc)
+
                 # Return to base branch for next iteration
                 if attempt > 0:
                     try:
                         self._executor.checkout(base_branch)
                     except Exception:
-                        pass
+                        logger.warning("Failed to restore base branch after failed attempt", exc_info=True)
 
+        logger.error("Action '%s' exhausted all %d retries", message, self._max_retries + 1)
         raise RuntimeError(
             f"Action '{message}' failed after {self._max_retries + 1} attempts. "
             f"Last error: {last_exc}"

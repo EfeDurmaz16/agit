@@ -6,13 +6,16 @@ from __future__ import annotations
 try:
     import agit_core  # type: ignore[import]
 
-    PyRepository = agit_core.PyRepository
-    PyAgentState = agit_core.PyAgentState
-    PyCommit = agit_core.PyCommit
-    PyStateDiff = agit_core.PyStateDiff
-    PyDiffEntry = agit_core.PyDiffEntry
+    # Native module exports names without Py prefix
+    PyRepository = getattr(agit_core, "PyRepository", None) or agit_core.Repository
+    PyAgentState = getattr(agit_core, "PyAgentState", None) or agit_core.AgentState
+    PyCommit = getattr(agit_core, "PyCommit", None) or agit_core.Commit
+    PyStateDiff = getattr(agit_core, "PyStateDiff", None) or agit_core.StateDiff
+    PyDiffEntry = getattr(agit_core, "PyDiffEntry", None) or agit_core.DiffEntry
     NATIVE_AVAILABLE = True
-except ImportError:
+except (ImportError, AttributeError):
+    import warnings
+
     from agit._stubs import (  # type: ignore[import]
         PyAgentState,
         PyCommit,
@@ -22,6 +25,12 @@ except ImportError:
     )
 
     NATIVE_AVAILABLE = False
+    warnings.warn(
+        "agit-core native module not found; using pure-Python stubs. "
+        "Install agit-core for better performance: pip install agit[native]",
+        ImportWarning,
+        stacklevel=2,
+    )
 
 from agit.engine.executor import ExecutionEngine
 from agit.engine.retry import RetryEngine

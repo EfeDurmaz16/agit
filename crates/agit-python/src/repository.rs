@@ -49,7 +49,8 @@ impl PyRepository {
     /// Open or initialize a repository at the given filesystem path.
     /// The path is used as the SQLite database file location.
     #[new]
-    fn new(path: &str) -> PyResult<Self> {
+    #[pyo3(signature = (path, agent_id=None))]
+    fn new(path: &str, agent_id: Option<&str>) -> PyResult<Self> {
         let runtime = tokio::runtime::Runtime::new()
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
 
@@ -215,6 +216,53 @@ impl PyRepository {
             .as_ref()
             .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("repository closed"))?;
         repo.head().map(|h| h.0).map_err(agit_err_to_py)
+    }
+
+    /// Delete a branch.
+    fn delete_branch(&mut self, name: &str) -> PyResult<()> {
+        let repo = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("repository closed"))?;
+        self.runtime
+            .block_on(repo.delete_branch(name))
+            .map_err(agit_err_to_py)
+    }
+
+    /// Set an encryption key to encrypt/decrypt agent state fields at rest.
+    fn set_encryption_key(&mut self, key: &str) -> PyResult<()> {
+        #[cfg(feature = "encryption")]
+        {
+            let repo = self.inner.as_mut().ok_or_else(|| {
+                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("repository closed")
+            })?;
+            repo.set_encryption_key(key);
+            Ok(())
+        }
+        #[cfg(not(feature = "encryption"))]
+        {
+            Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                "encryption feature not enabled in agit-core",
+            ))
+        }
+    }
+
+    /// Run garbage collection to remove unreachable objects.
+    fn gc(&self, py: Python<'_>, keep_last_n: usize) -> PyResult<PyObject> {
+        let repo = self
+            .inner
+            .as_ref()
+            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("repository closed"))?;
+        let result = self
+            .runtime
+            .block_on(repo.gc(keep_last_n))
+            .map_err(agit_err_to_py)?;
+
+        let d = PyDict::new(py);
+        d.set_item("objects_before", result.objects_before)?;
+        d.set_item("objects_removed", result.objects_removed)?;
+        d.set_item("objects_after", result.objects_after)?;
+        Ok(d.into())
     }
 
     fn __repr__(&self) -> String {

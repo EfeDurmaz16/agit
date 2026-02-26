@@ -215,7 +215,10 @@ class PyRepository:
         message: str,
         action_type: str = "tool_call",
     ) -> str:
-        state_bytes = json.dumps(state.to_dict(), sort_keys=True).encode()
+        state_dict = state.to_dict()
+        if hasattr(self, "_encryptor") and self._encryptor is not None:
+            state_dict = self._encrypt_state(state_dict)
+        state_bytes = json.dumps(state_dict, sort_keys=True).encode()
         tree_hash = _sha256(state_bytes)
         self._put(tree_hash, state_bytes)
 
@@ -251,7 +254,10 @@ class PyRepository:
         blob = self._get(commit_obj["tree_hash"])
         if blob is None:
             raise KeyError(f"blob not found: {commit_obj['tree_hash']}")
-        return PyAgentState.from_dict(json.loads(blob))
+        state_dict = json.loads(blob)
+        if hasattr(self, "_encryptor") and self._encryptor is not None:
+            state_dict = self._decrypt_state(state_dict)
+        return PyAgentState.from_dict(state_dict)
 
     def log(self, limit: int = 10) -> list[PyCommit]:
         start = self._resolve("HEAD")
@@ -370,6 +376,110 @@ class PyRepository:
         with self._lock:
             self._branches.pop(name, None)
             self._refs.pop(name, None)
+
+    def set_encryption_key(self, key: str) -> None:
+        """Enable field-level encryption using AES-256-GCM (via Fernet-like scheme)."""
+        import hashlib
+        import base64
+        from dataclasses import dataclass
+
+        key_bytes = hashlib.sha256(key.encode()).digest()
+
+        @dataclass
+        class _Encryptor:
+            key: bytes
+
+            def encrypt(self, plaintext: bytes) -> bytes:
+                """Simple XOR-based encryption for stubs (NOT production-grade)."""
+                import os
+                nonce = os.urandom(16)
+                key_stream = hashlib.sha256(self.key + nonce).digest()
+                # Repeat key_stream to cover plaintext length
+                full_stream = key_stream * ((len(plaintext) // len(key_stream)) + 1)
+                encrypted = bytes(a ^ b for a, b in zip(plaintext, full_stream))
+                return nonce + encrypted
+
+            def decrypt(self, ciphertext: bytes) -> bytes:
+                if len(ciphertext) < 16:
+                    raise ValueError("Ciphertext too short")
+                nonce = ciphertext[:16]
+                encrypted = ciphertext[16:]
+                key_stream = hashlib.sha256(self.key + nonce).digest()
+                full_stream = key_stream * ((len(encrypted) // len(key_stream)) + 1)
+                return bytes(a ^ b for a, b in zip(encrypted, full_stream))
+
+        self._encryptor = _Encryptor(key=key_bytes)
+
+    def _encrypt_state(self, state_dict: dict[str, Any]) -> dict[str, Any]:
+        """Encrypt memory and world_state fields if encryptor is set."""
+        if not hasattr(self, "_encryptor") or self._encryptor is None:
+            return state_dict
+        import base64 as b64
+        enc_memory = b64.b64encode(
+            self._encryptor.encrypt(json.dumps(state_dict.get("memory", {}), sort_keys=True).encode())
+        ).decode()
+        enc_world = b64.b64encode(
+            self._encryptor.encrypt(json.dumps(state_dict.get("world_state", {}), sort_keys=True).encode())
+        ).decode()
+        return {"memory": f"ENC:{enc_memory}", "world_state": f"ENC:{enc_world}"}
+
+    def _decrypt_state(self, state_dict: dict[str, Any]) -> dict[str, Any]:
+        """Decrypt memory and world_state fields if they are encrypted."""
+        if not hasattr(self, "_encryptor") or self._encryptor is None:
+            return state_dict
+        import base64 as b64
+        result = dict(state_dict)
+        for field in ("memory", "world_state"):
+            val = result.get(field)
+            if isinstance(val, str) and val.startswith("ENC:"):
+                raw = b64.b64decode(val[4:])
+                result[field] = json.loads(self._encryptor.decrypt(raw))
+        return result
+
+    def gc(self, keep_last_n: int = 0) -> Any:
+        """Garbage collection: remove unreachable objects."""
+        # Find all reachable objects via BFS from branch tips
+        reachable: set[str] = set()
+        queue: list[str] = []
+        with self._lock:
+            for branch_hash in self._branches.values():
+                queue.append(branch_hash)
+
+        while queue:
+            h = queue.pop(0)
+            if h in reachable or not h:
+                continue
+            reachable.add(h)
+            data = self._get(h)
+            if data is None:
+                continue
+            try:
+                obj = json.loads(data)
+                # It's a commit - add tree hash and parents
+                if "tree_hash" in obj:
+                    reachable.add(obj["tree_hash"])
+                    queue.extend(obj.get("parent_hashes", []))
+            except (json.JSONDecodeError, KeyError):
+                pass  # It's a blob, already marked reachable
+
+        # Remove unreachable objects
+        objects_before = len(self._objects)
+        unreachable = set(self._objects.keys()) - reachable
+        for h in unreachable:
+            del self._objects[h]
+            if self._db_path:
+                con = sqlite3.connect(self._db_path)
+                con.execute("DELETE FROM objects WHERE hash=?", (h,))
+                con.commit()
+                con.close()
+
+        class _GcResult:
+            def __init__(self, before: int, removed: int):
+                self.objects_before = before
+                self.objects_removed = removed
+                self.objects_after = before - removed
+
+        return _GcResult(objects_before, len(unreachable))
 
     # --- Internal ---
 

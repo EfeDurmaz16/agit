@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable
+
+logger = logging.getLogger("agit.engine.validator")
 
 
 class ValidationStage(str, Enum):
@@ -194,6 +197,7 @@ def _state_size_limit_check(
     try:
         size = len(json.dumps(state).encode())
     except Exception:
+        logger.warning("Failed to serialise state for size check", exc_info=True)
         return False, "could not serialise state"
     if size > limit:
         return False, f"state size {size} bytes exceeds limit {limit} bytes"
