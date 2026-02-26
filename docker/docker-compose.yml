@@ -1,39 +1,110 @@
+---
+# agit full-stack Docker Compose
+# Services:
+#   agit-api      – MCP server exposing agit tools over HTTP/SSE
+#   streamlit-ui  – Audit dashboard and replay UI
+#   postgres      – Optional persistent storage backend (future)
+#
+# Usage:
+#   docker compose -f docker/docker-compose.yml up
+#   docker compose -f docker/docker-compose.yml up agit-api  # API only
+
 services:
+  # ---------------------------------------------------------------------------
+  # agit MCP API server
+  # ---------------------------------------------------------------------------
   agit-api:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-    command: python -m agit.integrations.mcp_server
+      target: runtime
+    image: agit:latest
+    container_name: agit-api
+    command: python -m agit.integrations.mcp_server --host 0.0.0.0 --port 8000
     ports:
       - "8000:8000"
     volumes:
       - agit-data:/data
     environment:
-      - AGIT_REPO_PATH=/data/agit.db
+      AGIT_REPO_PATH: /data/agit.db
+      AGIT_AGENT_ID: mcp-server
+      AGIT_LOG_LEVEL: INFO
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+    networks:
+      - agit-net
 
+  # ---------------------------------------------------------------------------
+  # Streamlit audit dashboard and state replay UI
+  # ---------------------------------------------------------------------------
   streamlit-ui:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-    command: streamlit run python/agit/ui/audit_dashboard.py --server.port=8501 --server.address=0.0.0.0
+      target: runtime
+    image: agit:latest
+    container_name: agit-ui
+    command: >
+      streamlit run python/agit/ui/audit_dashboard.py
+        --server.port=8501
+        --server.address=0.0.0.0
+        --server.headless=true
+        --browser.gatherUsageStats=false
     ports:
       - "8501:8501"
     volumes:
       - agit-data:/data
+    environment:
+      AGIT_REPO_PATH: /data/agit.db
+      STREAMLIT_SERVER_ENABLE_CORS: "false"
     depends_on:
-      - agit-api
+      agit-api:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - agit-net
 
+  # ---------------------------------------------------------------------------
+  # PostgreSQL – optional persistent storage backend
+  # (agit will use this when AGIT_PG_URL is set)
+  # ---------------------------------------------------------------------------
   postgres:
     image: postgres:16-alpine
+    container_name: agit-postgres
     environment:
       POSTGRES_DB: agit
       POSTGRES_USER: agit
-      POSTGRES_PASSWORD: agit_dev
+      POSTGRES_PASSWORD: agit_dev_password
     ports:
       - "5432:5432"
     volumes:
       - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agit -d agit"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - agit-net
 
+# =============================================================================
+# Named volumes
+# =============================================================================
 volumes:
   agit-data:
+    driver: local
   pg-data:
+    driver: local
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  agit-net:
+    driver: bridge

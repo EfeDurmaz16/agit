@@ -7,6 +7,7 @@ use agit_core::{AgentState, Commit, DiffEntry, StateDiff};
 use crate::types::{PyAgentState, PyCommit, PyDiffEntry, PyStateDiff};
 
 /// Recursively convert a Python dict/list/primitive to a serde_json::Value.
+#[allow(dead_code)]
 pub fn py_dict_to_json(dict: &Bound<'_, PyDict>) -> Value {
     let mut map = serde_json::Map::new();
     for (k, v) in dict.iter() {
@@ -17,6 +18,7 @@ pub fn py_dict_to_json(dict: &Bound<'_, PyDict>) -> Value {
 }
 
 /// Convert any Python object to a serde_json::Value.
+#[allow(dead_code)]
 pub fn py_any_to_json(obj: &Bound<'_, PyAny>) -> Value {
     // None
     if obj.is_none() {
