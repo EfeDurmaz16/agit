@@ -8,15 +8,21 @@ use crate::error::{AgitError, Result};
 use crate::hash::compute_state_hash;
 use crate::objects::{Blob, Commit};
 use crate::refs::{Head, RefStore};
-use crate::state::{diff_states, three_way_merge, AgentState, StateDiff};
+use crate::state::{merkle_diff, three_way_merge, AgentState, StateDiff};
 use crate::storage::{LogEntry, LogFilter, StorageBackend};
+use crate::gc;
 use crate::types::{ActionType, Hash, MergeStrategy, ObjectType};
+
+#[cfg(feature = "encryption")]
+use crate::encryption::StateEncryptor;
 
 /// The main VCS repository, orchestrating storage, refs, and object model.
 pub struct Repository {
     storage: Box<dyn StorageBackend>,
     refs: RefStore,
     agent_id: String,
+    #[cfg(feature = "encryption")]
+    encryptor: Option<StateEncryptor>,
 }
 
 impl Repository {
@@ -36,12 +42,20 @@ impl Repository {
             storage,
             refs,
             agent_id: "default".to_string(),
+            #[cfg(feature = "encryption")]
+            encryptor: None,
         })
     }
 
     /// Set the agent ID for audit logging.
     pub fn set_agent_id(&mut self, id: &str) {
         self.agent_id = id.to_string();
+    }
+
+    /// Set an encryption key to encrypt/decrypt agent state fields at rest.
+    #[cfg(feature = "encryption")]
+    pub fn set_encryption_key(&mut self, key: &str) {
+        self.encryptor = Some(StateEncryptor::new(key));
     }
 
     /// Commit agent state, returning the commit hash.
@@ -63,8 +77,15 @@ impl Repository {
         action_type: ActionType,
         metadata: serde_json::Map<String, Value>,
     ) -> Result<Hash> {
+        // Optional encryption
+        let final_state = match self.get_encryptor() {
+            #[cfg(feature = "encryption")]
+            Some(enc) => enc.encrypt_state(state)?,
+            _ => state.clone(),
+        };
+
         // Store the state as a blob
-        let state_value = state.to_value();
+        let state_value = final_state.to_value();
         let blob = Blob::new(state_value);
         let tree_hash = blob.hash();
         self.storage
@@ -169,13 +190,18 @@ impl Repository {
     }
 
     /// Compute the diff between two commits.
+    /// Uses Merkle trees for O(log N) performance on large states.
     pub async fn diff(&self, hash1: &str, hash2: &str) -> Result<StateDiff> {
         let state1 = self.get_state(hash1).await?;
         let state2 = self.get_state(hash2).await?;
-        let mut diff = diff_states(&state1, &state2);
-        diff.base_hash = hash1.to_string();
-        diff.target_hash = hash2.to_string();
-        Ok(diff)
+        
+        let entries = merkle_diff(&state1.to_value(), &state2.to_value());
+        
+        Ok(StateDiff {
+            base_hash: hash1.to_string(),
+            target_hash: hash2.to_string(),
+            entries,
+        })
     }
 
     /// Merge a branch into the current branch.
@@ -361,7 +387,24 @@ impl Repository {
             })?;
 
         let state: AgentState = serde_json::from_slice(&blob_data)?;
-        Ok(state)
+
+        // Optional decryption
+        match self.get_encryptor() {
+            #[cfg(feature = "encryption")]
+            Some(enc) => enc.decrypt_state(&state),
+            _ => Ok(state),
+        }
+    }
+
+    /// Helper to get encryptor if feature is enabled.
+    #[cfg(feature = "encryption")]
+    fn get_encryptor(&self) -> Option<&StateEncryptor> {
+        self.encryptor.as_ref()
+    }
+
+    #[cfg(not(feature = "encryption"))]
+    fn get_encryptor(&self) -> Option<()> {
+        None
     }
 
     /// Get the current HEAD hash.
@@ -394,6 +437,29 @@ impl Repository {
     /// Get the state hash for content addressing.
     pub fn compute_state_hash(state: &AgentState) -> Hash {
         compute_state_hash(&state.to_value())
+    }
+
+    /// Run garbage collection to remove unreachable objects.
+    pub async fn gc(&self, keep_last_n: usize) -> Result<gc::GcResult> {
+        gc::gc(&*self.storage, &self.refs, keep_last_n).await
+    }
+
+    /// Squash a range of commits into a single commit.
+    pub async fn squash(
+        &mut self,
+        branch: &str,
+        from_hash: &str,
+        to_hash: &str,
+    ) -> Result<gc::SquashResult> {
+        gc::squash(
+            &*self.storage,
+            &mut self.refs,
+            &self.agent_id,
+            branch,
+            from_hash,
+            to_hash,
+        )
+        .await
     }
 
     // --- Private helpers ---

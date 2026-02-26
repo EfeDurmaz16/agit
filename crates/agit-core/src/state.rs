@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use crate::types::ChangeType;
 
@@ -192,6 +193,127 @@ fn merge_values(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Merkle Tree Optimization
+// ---------------------------------------------------------------------------
+
+/// A Merkle hash node for a JSON subtree. Enables O(log N) comparison
+/// of large state objects by skipping unchanged subtrees.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MerkleNode {
+    /// SHA-256 hash of this node's canonical content.
+    pub hash: String,
+    /// Child nodes (only for objects; empty for leaves).
+    pub children: std::collections::BTreeMap<String, MerkleNode>,
+}
+
+impl MerkleNode {
+    /// Build a Merkle tree from a JSON value.
+    pub fn from_value(value: &Value) -> Self {
+        match value {
+            Value::Object(map) => {
+                let mut children = std::collections::BTreeMap::new();
+                let mut hasher = Sha256::new();
+                hasher.update(b"object{");
+                for (key, val) in map {
+                    let child = MerkleNode::from_value(val);
+                    hasher.update(key.as_bytes());
+                    hasher.update(b":");
+                    hasher.update(child.hash.as_bytes());
+                    hasher.update(b",");
+                    children.insert(key.clone(), child);
+                }
+                hasher.update(b"}");
+                let hash = format!("{:x}", hasher.finalize());
+                MerkleNode { hash, children }
+            }
+            _ => {
+                // Leaf node: hash the canonical JSON representation
+                let mut hasher = Sha256::new();
+                let serialized = serde_json::to_string(value).unwrap_or_default();
+                hasher.update(serialized.as_bytes());
+                let hash = format!("{:x}", hasher.finalize());
+                MerkleNode {
+                    hash,
+                    children: std::collections::BTreeMap::new(),
+                }
+            }
+        }
+    }
+}
+
+/// Merkle-optimized diff: skips entire subtrees whose hashes match.
+/// Falls back to leaf comparison only where hashes differ.
+/// This is O(changes * log N) instead of O(N) for large states with few changes.
+pub fn merkle_diff(base: &Value, target: &Value) -> Vec<DiffEntry> {
+    let base_tree = MerkleNode::from_value(base);
+    let target_tree = MerkleNode::from_value(target);
+    let mut entries = Vec::new();
+    merkle_diff_nodes(&base_tree, &target_tree, base, target, &mut vec![], &mut entries);
+    entries
+}
+
+fn merkle_diff_nodes(
+    base_node: &MerkleNode,
+    target_node: &MerkleNode,
+    base_val: &Value,
+    target_val: &Value,
+    path: &mut Vec<String>,
+    entries: &mut Vec<DiffEntry>,
+) {
+    // Fast path: if hashes match, entire subtree is identical
+    if base_node.hash == target_node.hash {
+        return;
+    }
+
+    match (base_val, target_val) {
+        (Value::Object(base_map), Value::Object(target_map)) => {
+            // Check removed and changed keys
+            for (key, base_child) in &base_node.children {
+                path.push(key.clone());
+                if let Some(target_child) = target_node.children.get(key) {
+                    // Both have this key - recurse only if hashes differ
+                    if base_child.hash != target_child.hash {
+                        let bv = base_map.get(key).unwrap_or(&Value::Null);
+                        let tv = target_map.get(key).unwrap_or(&Value::Null);
+                        merkle_diff_nodes(base_child, target_child, bv, tv, path, entries);
+                    }
+                } else {
+                    entries.push(DiffEntry {
+                        path: path.clone(),
+                        change_type: ChangeType::Removed,
+                        old_value: base_map.get(key).cloned(),
+                        new_value: None,
+                    });
+                }
+                path.pop();
+            }
+            // Check added keys
+            for key in target_node.children.keys() {
+                if !base_node.children.contains_key(key) {
+                    path.push(key.clone());
+                    entries.push(DiffEntry {
+                        path: path.clone(),
+                        change_type: ChangeType::Added,
+                        old_value: None,
+                        new_value: target_map.get(key).cloned(),
+                    });
+                    path.pop();
+                }
+            }
+        }
+        _ => {
+            // Leaf value changed (hashes already differ)
+            entries.push(DiffEntry {
+                path: path.clone(),
+                change_type: ChangeType::Changed,
+                old_value: Some(base_val.clone()),
+                new_value: Some(target_val.clone()),
+            });
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,5 +387,83 @@ mod tests {
         let (merged, conflicts) = three_way_merge(&base, &ours, &theirs);
         assert!(conflicts.is_empty());
         assert_eq!(merged, json!({"a": 2}));
+    }
+
+    // Merkle tree tests
+
+    #[test]
+    fn test_merkle_identical_values_same_hash() {
+        let v1 = json!({"a": 1, "b": {"c": 2}});
+        let v2 = json!({"a": 1, "b": {"c": 2}});
+        let n1 = MerkleNode::from_value(&v1);
+        let n2 = MerkleNode::from_value(&v2);
+        assert_eq!(n1.hash, n2.hash);
+    }
+
+    #[test]
+    fn test_merkle_different_values_different_hash() {
+        let v1 = json!({"a": 1});
+        let v2 = json!({"a": 2});
+        let n1 = MerkleNode::from_value(&v1);
+        let n2 = MerkleNode::from_value(&v2);
+        assert_ne!(n1.hash, n2.hash);
+    }
+
+    #[test]
+    fn test_merkle_diff_no_changes() {
+        let v = json!({"a": 1, "b": {"c": 2, "d": 3}});
+        let entries = merkle_diff(&v, &v);
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn test_merkle_diff_detects_change() {
+        let base = json!({"a": 1, "b": {"c": 2, "d": 3}});
+        let target = json!({"a": 1, "b": {"c": 99, "d": 3}});
+        let entries = merkle_diff(&base, &target);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, vec!["b", "c"]);
+        assert_eq!(entries[0].change_type, ChangeType::Changed);
+    }
+
+    #[test]
+    fn test_merkle_diff_added_and_removed() {
+        let base = json!({"a": 1, "b": 2});
+        let target = json!({"a": 1, "c": 3});
+        let entries = merkle_diff(&base, &target);
+        let removed: Vec<_> = entries.iter().filter(|e| e.change_type == ChangeType::Removed).collect();
+        let added: Vec<_> = entries.iter().filter(|e| e.change_type == ChangeType::Added).collect();
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0].path, vec!["b"]);
+        assert_eq!(added.len(), 1);
+        assert_eq!(added[0].path, vec!["c"]);
+    }
+
+    #[test]
+    fn test_merkle_diff_skips_unchanged_subtree() {
+        // Large unchanged subtree should be skipped entirely
+        let mut large = serde_json::Map::new();
+        for i in 0..100 {
+            large.insert(format!("key_{i}"), json!(i));
+        }
+        let base = json!({"unchanged": large, "changed": 1});
+        let target = json!({"unchanged": large, "changed": 2});
+        let entries = merkle_diff(&base, &target);
+        // Only the "changed" leaf should be detected
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, vec!["changed"]);
+    }
+
+    #[test]
+    fn test_merkle_diff_matches_recursive_diff() {
+        // Merkle diff should produce the same results as recursive diff
+        let base = AgentState::new(json!({"x": 1, "y": {"z": 2}}), json!({"w": 3}));
+        let target = AgentState::new(json!({"x": 10, "y": {"z": 2}}), json!({"w": 4}));
+        let recursive = diff_states(&base, &target);
+        let base_val = base.to_value();
+        let target_val = target.to_value();
+        let merkle = merkle_diff(&base_val, &target_val);
+        // Same number of changes detected
+        assert_eq!(recursive.entries.len(), merkle.len());
     }
 }

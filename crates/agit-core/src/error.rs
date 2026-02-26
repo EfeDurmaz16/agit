@@ -29,8 +29,14 @@ pub enum AgitError {
     #[error("invalid argument: {0}")]
     InvalidArgument(String),
 
+    #[error("invalid operation: {0}")]
+    InvalidOperation(String),
+
     #[error("no commits yet on this branch")]
     NoCommits,
+
+    #[error("encryption error: {0}")]
+    EncryptionError(String),
 }
 
 pub type Result<T> = std::result::Result<T, AgitError>;

@@ -6,9 +6,10 @@ description = "Git-like VCS engine for AI agents"
 license = "MIT"
 
 [features]
-default = []
+default = ["encryption"]
 postgres = ["dep:tokio-postgres"]
 s3 = ["dep:aws-sdk-s3", "dep:aws-config", "dep:zstd"]
+encryption = ["dep:aes-gcm", "dep:argon2"]
 
 [dependencies]
 sha2 = { workspace = true }
@@ -31,6 +32,10 @@ tokio-postgres = { version = "0.7", optional = true }
 aws-sdk-s3 = { version = "1", optional = true }
 aws-config  = { version = "1", optional = true }
 zstd        = { version = "0.13", optional = true }
+
+# Optional: encryption
+aes-gcm = { workspace = true, optional = true }
+argon2 = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
