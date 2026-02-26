@@ -1,10 +1,13 @@
 """CrewAI integration – step_callback and task_callback wrappers."""
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any, Callable
 
 from agit.engine.executor import ExecutionEngine
+
+logger = logging.getLogger("agit.integrations.crewai")
 
 try:
     from crewai import Task  # type: ignore[import]
@@ -60,7 +63,7 @@ def agit_step_callback(engine: ExecutionEngine) -> Callable[[Any], None]:
                 action_type="tool_call",
             )
         except Exception:
-            pass
+            logger.warning("Failed to commit CrewAI step %d", step_num, exc_info=True)
 
     return _callback
 
@@ -113,7 +116,7 @@ def agit_task_callback(engine: ExecutionEngine) -> Callable[[Any], None]:
                 action_type="checkpoint",
             )
         except Exception:
-            pass
+            logger.warning("Failed to commit CrewAI task %d", task_num, exc_info=True)
 
     return _callback
 

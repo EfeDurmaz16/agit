@@ -1,10 +1,13 @@
 """Claude Agent SDK integration – PreToolUse / PostToolUse hooks."""
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any
 
 from agit.engine.executor import ExecutionEngine
+
+logger = logging.getLogger("agit.integrations.claude_sdk")
 
 try:
     from claude_agent_sdk import PreToolUse, PostToolUse  # type: ignore[import]
@@ -63,7 +66,7 @@ class AgitClaudeHooks:
                 action_type="checkpoint",
             )
         except Exception:
-            pass
+            logger.warning("Failed to commit pre-tool state for %s", tool_name, exc_info=True)
 
     def on_post_tool_use(self, event: PostToolUse) -> None:  # type: ignore[override]
         """Handle PostToolUse event – commit state after the tool returns."""
@@ -85,7 +88,7 @@ class AgitClaudeHooks:
                 action_type="tool_call",
             )
         except Exception:
-            pass
+            logger.warning("Failed to commit post-tool state for %s", tool_name, exc_info=True)
 
     # ------------------------------------------------------------------
     # Convenience – return hook pairs as a dict for easy registration

@@ -2,12 +2,120 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
+import logging
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
+logger = logging.getLogger("agit.swarm.orchestrator")
+
 from agit.engine.executor import ExecutionEngine
+
+
+class DistributedLock:
+    """File-based advisory lock for safe concurrent commits.
+
+    Uses fcntl.flock for POSIX advisory locking on a lock file,
+    ensuring only one agent writes to the repository at a time.
+
+    Parameters
+    ----------
+    lock_path:
+        Path to the lock file. Created if it doesn't exist.
+    timeout:
+        Maximum seconds to wait for lock (0 = non-blocking).
+    """
+
+    def __init__(self, lock_path: str, timeout: float = 30.0) -> None:
+        self._lock_path = Path(lock_path)
+        self._lock_path.parent.mkdir(parents=True, exist_ok=True)
+        self._timeout = timeout
+        self._fd: Any = None
+
+    def acquire(self) -> bool:
+        """Acquire the advisory lock. Returns True on success."""
+        self._fd = open(self._lock_path, "w")
+        try:
+            if self._timeout == 0:
+                fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            else:
+                # Blocking lock (fcntl doesn't support timeout natively,
+                # so we use blocking mode)
+                fcntl.flock(self._fd, fcntl.LOCK_EX)
+            return True
+        except (IOError, OSError):
+            self._fd.close()
+            self._fd = None
+            return False
+
+    def release(self) -> None:
+        """Release the advisory lock."""
+        if self._fd is not None:
+            try:
+                fcntl.flock(self._fd, fcntl.LOCK_UN)
+                self._fd.close()
+            except (IOError, OSError):
+                pass
+            self._fd = None
+
+    def __enter__(self) -> DistributedLock:
+        self.acquire()
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        self.release()
+
+
+def topological_sort(subtasks: list[SubTask]) -> list[SubTask]:
+    """Sort sub-tasks in dependency order using Kahn's algorithm.
+
+    Parameters
+    ----------
+    subtasks:
+        List of sub-tasks with dependency references.
+
+    Returns
+    -------
+    list[SubTask]:
+        Topologically sorted list.
+
+    Raises
+    ------
+    ValueError:
+        If a dependency cycle is detected.
+    """
+    id_to_task = {st.id: st for st in subtasks}
+    in_degree: dict[str, int] = {st.id: 0 for st in subtasks}
+    adjacency: dict[str, list[str]] = {st.id: [] for st in subtasks}
+
+    for st in subtasks:
+        for dep in st.dependencies:
+            if dep in adjacency:
+                adjacency[dep].append(st.id)
+                in_degree[st.id] += 1
+
+    queue: deque[str] = deque()
+    for sid, degree in in_degree.items():
+        if degree == 0:
+            queue.append(sid)
+
+    result: list[SubTask] = []
+    while queue:
+        current = queue.popleft()
+        result.append(id_to_task[current])
+        for neighbor in adjacency[current]:
+            in_degree[neighbor] -= 1
+            if in_degree[neighbor] == 0:
+                queue.append(neighbor)
+
+    if len(result) != len(subtasks):
+        raise ValueError("Dependency cycle detected in sub-tasks")
+
+    return result
 
 
 @dataclass
@@ -117,7 +225,7 @@ class SwarmOrchestrator:
         )
         subtasks.append(synth_task)
 
-        return subtasks
+        return topological_sort(subtasks)
 
     def assign(
         self, subtasks: list[SubTask], agents: list[str]
@@ -301,14 +409,16 @@ class SwarmOrchestrator:
             "world_state": {},
         }
 
+        lock = DistributedLock(f"{self._repo_path}/.agit/swarm.lock")
         engine = ExecutionEngine(repo_path=self._repo_path, agent_id=agent_id)
         try:
-            engine.commit_state(
-                state,
-                message=f"swarm subtask {subtask.id[:6]}: {subtask.description[:50]}",
-                action_type="tool_call",
-            )
+            with lock:
+                engine.commit_state(
+                    state,
+                    message=f"swarm subtask {subtask.id[:6]}: {subtask.description[:50]}",
+                    action_type="tool_call",
+                )
         except Exception:
-            pass  # Never block orchestration due to commit errors
+            logger.warning("Failed to commit swarm subtask %s state", subtask.id[:6], exc_info=True)
 
         return result

@@ -1,9 +1,12 @@
 """Google ADK integration – auto-commit on every tool call."""
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from agit.engine.executor import ExecutionEngine
+
+logger = logging.getLogger("agit.integrations.google_adk")
 
 try:
     from google.adk.agents import Agent  # type: ignore[import]
@@ -60,7 +63,7 @@ class AgitPlugin:
             )
             self._pre_hashes[call_id] = h
         except Exception:
-            pass  # Never block tool execution
+            logger.warning("Failed to commit pre-tool state for %s", tool_name, exc_info=True)
 
         return None  # Don't modify args
 
@@ -92,7 +95,7 @@ class AgitPlugin:
                 action_type="tool_call",
             )
         except Exception:
-            pass
+            logger.warning("Failed to commit post-tool state for %s", tool_name, exc_info=True)
 
         return tool_response
 

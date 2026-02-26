@@ -1,10 +1,13 @@
 """OpenAI Agents SDK integration – AgentHooks subclass."""
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any
 
 from agit.engine.executor import ExecutionEngine
+
+logger = logging.getLogger("agit.integrations.openai_agents")
 
 try:
     from agents import AgentHooks, RunContextWrapper, Tool  # type: ignore[import]
@@ -70,7 +73,7 @@ class AgitAgentHooks(AgentHooks):  # type: ignore[misc]
                 action_type="checkpoint",
             )
         except Exception:
-            pass
+            logger.warning("Failed to commit pre-tool state for %s", tool_name, exc_info=True)
 
     async def on_tool_end(
         self,
@@ -96,7 +99,7 @@ class AgitAgentHooks(AgentHooks):  # type: ignore[misc]
                 action_type="tool_call",
             )
         except Exception:
-            pass
+            logger.warning("Failed to commit post-tool state for %s", tool_name, exc_info=True)
 
     # ------------------------------------------------------------------
     # Helpers

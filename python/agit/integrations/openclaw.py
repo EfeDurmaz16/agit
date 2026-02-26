@@ -4,8 +4,11 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import time
 from typing import Any, Callable
+
+logger = logging.getLogger("agit.integrations.openclaw")
 
 from agit.engine.executor import ExecutionEngine
 

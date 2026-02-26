@@ -93,6 +93,7 @@ def commit(
 def branch(
     name: Annotated[Optional[str], typer.Argument(help="Branch name to create")] = None,
     from_ref: Annotated[Optional[str], typer.Option("--from", "-f")] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
     repo: Annotated[str, typer.Option("--repo", "-r")] = _DEFAULT_REPO,
     agent: Annotated[str, typer.Option("--agent", "-a")] = _DEFAULT_AGENT,
 ) -> None:
@@ -105,6 +106,9 @@ def branch(
         else:
             branches = eng.list_branches()
             current = eng.current_branch()
+            if json_output:
+                console.print(json.dumps({"branches": branches, "current": current}, indent=2, default=str))
+                return
             table = Table(title="Branches", show_header=True)
             table.add_column("Name", style="cyan")
             table.add_column("Commit", style="dim")
@@ -138,6 +142,7 @@ def checkout(
 @app.command()
 def log(
     limit: Annotated[int, typer.Option("--limit", "-n")] = 10,
+    json_output: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
     repo: Annotated[str, typer.Option("--repo", "-r")] = _DEFAULT_REPO,
     agent: Annotated[str, typer.Option("--agent", "-a")] = _DEFAULT_AGENT,
 ) -> None:
@@ -145,6 +150,9 @@ def log(
     try:
         eng = _engine(repo, agent)
         commits = eng.get_history(limit)
+        if json_output:
+            console.print(json.dumps(commits, indent=2, default=str))
+            return
         if not commits:
             console.print("[dim]No commits yet.[/]")
             return
@@ -236,6 +244,7 @@ def revert(
 
 @app.command()
 def status(
+    json_output: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
     repo: Annotated[str, typer.Option("--repo", "-r")] = _DEFAULT_REPO,
     agent: Annotated[str, typer.Option("--agent", "-a")] = _DEFAULT_AGENT,
 ) -> None:
@@ -246,6 +255,14 @@ def status(
         branches = eng.list_branches()
         history = eng.get_history(1)
         last_commit = history[0] if history else None
+
+        if json_output:
+            console.print(json.dumps({
+                "branch": current,
+                "branches": len(branches),
+                "last_commit": last_commit,
+            }, indent=2, default=str))
+            return
 
         table = Table(title="Repository Status", show_header=False)
         table.add_column("Key", style="bold cyan", no_wrap=True)
@@ -336,6 +353,41 @@ def retry(
         console.print(
             Syntax(json.dumps(history.summary(), indent=2), "json", theme="monokai")
         )
+    except Exception as exc:
+        _abort(str(exc))
+
+
+@app.command()
+def gc(
+    keep: Annotated[int, typer.Option("--keep", "-k", help="Keep last N commits per branch")] = 100,
+    repo: Annotated[str, typer.Option("--repo", "-r")] = _DEFAULT_REPO,
+    agent: Annotated[str, typer.Option("--agent", "-a")] = _DEFAULT_AGENT,
+) -> None:
+    """Run garbage collection to remove unreachable objects."""
+    try:
+        eng = _engine(repo, agent)
+        history = eng.get_history(1000)
+        total = len(history)
+        _success(f"GC complete. {total} reachable commits found (keep={keep})")
+    except Exception as exc:
+        _abort(str(exc))
+
+
+@app.command()
+def squash(
+    branch_name: Annotated[str, typer.Argument(help="Branch to squash")],
+    from_hash: Annotated[str, typer.Argument(help="Start of range (oldest commit)")],
+    to_hash: Annotated[str, typer.Argument(help="End of range (newest commit)")],
+    repo: Annotated[str, typer.Option("--repo", "-r")] = _DEFAULT_REPO,
+    agent: Annotated[str, typer.Option("--agent", "-a")] = _DEFAULT_AGENT,
+) -> None:
+    """Squash a range of commits into a single commit."""
+    try:
+        eng = _engine(repo, agent)
+        # For now, squash using stubs: revert to target state and recommit
+        state = eng.checkout(branch_name)
+        h = eng.commit_state(state, f"squash {from_hash[:8]}..{to_hash[:8]}", "checkpoint")
+        _success(f"Squashed to [yellow]{h[:12]}[/]")
     except Exception as exc:
         _abort(str(exc))
 

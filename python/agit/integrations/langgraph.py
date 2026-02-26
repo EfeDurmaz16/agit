@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, AsyncIterator, Iterator, Optional
 
 from agit.engine.executor import ExecutionEngine
+
+logger = logging.getLogger("agit.integrations.langgraph")
 
 try:
     from langgraph.checkpoint.base import (  # type: ignore[import]
@@ -158,7 +161,7 @@ class AgitCheckpointSaver(BaseCheckpointSaver):  # type: ignore[misc]
                 action_type="checkpoint",
             )
         except Exception:
-            pass  # Never block LangGraph execution
+            logger.warning("Failed to commit LangGraph checkpoint for thread=%s", thread_id, exc_info=True)
 
     @staticmethod
     def _thread_id(config: Any) -> str:

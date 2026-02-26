@@ -195,22 +195,70 @@ def create_mcp_server(
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
 
+    # ------------------------------------------------------------------
+    # Tool: agit_state_replay
+    # ------------------------------------------------------------------
+    @mcp.tool()
+    def agit_state_replay(commit_hash: str) -> dict[str, Any]:
+        """Get the agent state at a specific commit without changing HEAD."""
+        try:
+            # Get state at commit via checkout and restore
+            current = engine.current_branch() or "main"
+            state = engine.checkout(commit_hash)
+            engine.checkout(current)  # restore position
+            return {"ok": True, "hash": commit_hash, "state": state}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    # ------------------------------------------------------------------
+    # Tool: agit_search
+    # ------------------------------------------------------------------
+    @mcp.tool()
+    def agit_search(
+        query: str,
+        action_type: Optional[str] = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        """Search commits by message content or action type."""
+        try:
+            commits = engine.get_history(limit * 5)  # over-fetch for filtering
+            results = []
+            query_lower = query.lower()
+            for c in commits:
+                msg = c.get("message", "").lower()
+                at = c.get("action_type", "")
+                if query_lower in msg or query_lower in at:
+                    if action_type and at != action_type:
+                        continue
+                    results.append(c)
+                    if len(results) >= limit:
+                        break
+            return {"ok": True, "results": results, "count": len(results)}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
     return mcp
 
 
 def main() -> None:
-    """CLI entry-point: start the MCP server with default in-memory engine."""
+    """CLI entry-point: start the MCP server."""
     import argparse
 
     parser = argparse.ArgumentParser(description="agit MCP server")
     parser.add_argument("--repo", default=".", help="Repository path")
     parser.add_argument("--agent", default="mcp", help="Agent ID")
     parser.add_argument("--transport", default="stdio", choices=["stdio", "sse"])
+    parser.add_argument("--host", default="0.0.0.0", help="SSE host (default: 0.0.0.0)")
+    parser.add_argument("--port", type=int, default=8000, help="SSE port (default: 8000)")
     args = parser.parse_args()
 
     engine = ExecutionEngine(repo_path=args.repo, agent_id=args.agent)
     server = create_mcp_server(engine)
-    server.run(transport=args.transport)
+
+    if args.transport == "sse":
+        server.run(transport="sse", host=args.host, port=args.port)
+    else:
+        server.run(transport="stdio")
 
 
 if __name__ == "__main__":

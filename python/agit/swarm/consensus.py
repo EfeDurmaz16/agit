@@ -1,10 +1,13 @@
 """Voting-based conflict resolution for multi-agent merges."""
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
+
+logger = logging.getLogger("agit.swarm.consensus")
 
 from agit.engine.executor import ExecutionEngine
 
@@ -170,7 +173,7 @@ class ConsensusMerger:
                 action_type="system_event",
             )
         except Exception:
-            pass
+            logger.warning("Failed to commit consensus proposal %s", proposal.id[:8], exc_info=True)
 
         return proposal
 
@@ -335,7 +338,7 @@ class ConsensusMerger:
                 action_type="system_event",
             )
         except Exception:
-            pass
+            logger.warning("Failed to commit consensus resolution %s", proposal.id[:8], exc_info=True)
 
     def get_proposal(self, proposal_id: str) -> MergeProposal | None:
         """Return the :class:`MergeProposal` with the given ID, or ``None``."""

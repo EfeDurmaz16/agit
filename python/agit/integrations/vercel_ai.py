@@ -1,8 +1,11 @@
 """Vercel AI SDK Python-side middleware wrapper."""
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any, AsyncGenerator, Callable, Generator
+
+logger = logging.getLogger("agit.integrations.vercel_ai")
 
 from agit.engine.executor import ExecutionEngine
 
