@@ -1,0 +1,70 @@
+{
+  "name": "agit-vscode",
+  "displayName": "AgentGit",
+  "description": "Git-like version control for AI agents",
+  "version": "0.1.0",
+  "publisher": "agit",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "keywords": ["ai", "agents", "version-control", "git"],
+  "activationEvents": [
+    "workspaceContains:.agit"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "agit",
+          "title": "AgentGit",
+          "icon": "$(git-branch)"
+        }
+      ]
+    },
+    "views": {
+      "agit": [
+        {
+          "id": "agitCommitHistory",
+          "name": "Commit History"
+        },
+        {
+          "id": "agitBranches",
+          "name": "Branches"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "agit.commit",
+        "title": "AgentGit: Commit State"
+      },
+      {
+        "command": "agit.branch",
+        "title": "AgentGit: Create Branch"
+      },
+      {
+        "command": "agit.checkout",
+        "title": "AgentGit: Checkout Branch"
+      },
+      {
+        "command": "agit.revert",
+        "title": "AgentGit: Revert to Commit"
+      },
+      {
+        "command": "agit.refresh",
+        "title": "AgentGit: Refresh"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.5"
+  }
+}
