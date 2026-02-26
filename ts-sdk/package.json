@@ -11,6 +11,7 @@
     "@agit/core": "file:../crates/agit-node"
   },
   "devDependencies": {
+    "@types/node": "^22",
     "typescript": "^5.5",
     "vitest": "^2.0"
   }

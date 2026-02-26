@@ -47,7 +47,7 @@ interface NativeRepository {
 
 interface NativeModule {
   JsRepository: {
-    new(path: string): Promise<NativeRepository>;
+    open(path: string): Promise<NativeRepository>;
   };
 }
 
@@ -386,7 +386,7 @@ export class AgitClient {
     if (usePureTs) {
       repo = new PureTsRepository();
     } else {
-      repo = await nativeModule!.JsRepository.new(repoPath);
+      repo = await nativeModule!.JsRepository.open(repoPath);
     }
 
     return new AgitClient(repo);
