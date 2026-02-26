@@ -234,7 +234,8 @@ impl StorageBackend for SqliteStorage {
                 sql.push_str(" ORDER BY timestamp DESC");
 
                 if let Some(limit) = filter.limit {
-                    sql.push_str(&format!(" LIMIT {}", limit));
+                    sql.push_str(&format!(" LIMIT ?{}", params.len() + 1));
+                    params.push(Box::new(limit as i64));
                 }
 
                 let mut stmt = conn.prepare(&sql)?;
@@ -262,6 +263,35 @@ impl StorageBackend for SqliteStorage {
                     entries.push(row?);
                 }
                 Ok(entries)
+            })
+            .await
+            .map_err(|e: tokio_rusqlite::Error| AgitError::Storage(e.to_string()))
+    }
+    async fn delete_object(&self, hash: &str) -> Result<bool> {
+        let hash = hash.to_string();
+
+        self.conn
+            .call(move |conn| -> std::result::Result<bool, rusqlite::Error> {
+                let count = conn.execute(
+                    "DELETE FROM objects WHERE hash = ?1",
+                    rusqlite::params![hash],
+                )?;
+                Ok(count > 0)
+            })
+            .await
+            .map_err(|e: tokio_rusqlite::Error| AgitError::Storage(e.to_string()))
+    }
+
+    async fn list_objects(&self) -> Result<Vec<String>> {
+        self.conn
+            .call(|conn| -> std::result::Result<Vec<String>, rusqlite::Error> {
+                let mut stmt = conn.prepare("SELECT hash FROM objects")?;
+                let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+                let mut hashes = Vec::new();
+                for row in rows {
+                    hashes.push(row?);
+                }
+                Ok(hashes)
             })
             .await
             .map_err(|e: tokio_rusqlite::Error| AgitError::Storage(e.to_string()))

@@ -3,6 +3,8 @@ use async_trait::async_trait;
 #[cfg(feature = "postgres")]
 use std::collections::HashMap;
 #[cfg(feature = "postgres")]
+use std::sync::Arc;
+#[cfg(feature = "postgres")]
 use tokio_postgres::{Client, NoTls};
 
 #[cfg(feature = "postgres")]
@@ -13,10 +15,15 @@ use crate::error::{AgitError, Result};
 use crate::types::ObjectType;
 
 /// PostgreSQL-backed storage with multi-tenant support via agent_id column.
+///
+/// Uses `Arc<Client>` instead of `Mutex<Client>` because `tokio_postgres::Client`
+/// methods take `&self` and internally pipeline requests over a single TCP connection.
+/// This allows concurrent queries without serializing behind a mutex.
+///
 /// Enable with the `postgres` Cargo feature flag.
 #[cfg(feature = "postgres")]
 pub struct PostgresStorage {
-    client: tokio::sync::Mutex<Client>,
+    client: Arc<Client>,
 }
 
 #[cfg(feature = "postgres")]
@@ -37,7 +44,7 @@ impl PostgresStorage {
         });
 
         let storage = PostgresStorage {
-            client: tokio::sync::Mutex::new(client),
+            client: Arc::new(client),
         };
         storage.initialize().await?;
         Ok(storage)
@@ -48,7 +55,7 @@ impl PostgresStorage {
 #[async_trait]
 impl StorageBackend for PostgresStorage {
     async fn initialize(&self) -> Result<()> {
-        let client = self.client.lock().await;
+        let client = self.client;
         client
             .batch_execute(
                 "
@@ -91,7 +98,7 @@ impl StorageBackend for PostgresStorage {
     }
 
     async fn put_object(&self, hash: &str, obj_type: ObjectType, data: &[u8]) -> Result<()> {
-        let client = self.client.lock().await;
+        let client = self.client;
         let type_str = obj_type.to_string();
         client
             .execute(
@@ -106,7 +113,7 @@ impl StorageBackend for PostgresStorage {
     }
 
     async fn get_object(&self, hash: &str) -> Result<Option<Vec<u8>>> {
-        let client = self.client.lock().await;
+        let client = self.client;
         let rows = client
             .query(
                 "SELECT data FROM objects WHERE hash = $1",
@@ -118,7 +125,7 @@ impl StorageBackend for PostgresStorage {
     }
 
     async fn has_object(&self, hash: &str) -> Result<bool> {
-        let client = self.client.lock().await;
+        let client = self.client;
         let rows = client
             .query(
                 "SELECT 1 FROM objects WHERE hash = $1 LIMIT 1",
@@ -130,7 +137,7 @@ impl StorageBackend for PostgresStorage {
     }
 
     async fn set_ref(&self, name: &str, hash: &str) -> Result<()> {
-        let client = self.client.lock().await;
+        let client = self.client;
         client
             .execute(
                 "INSERT INTO refs (name, target, agent_id)
@@ -145,7 +152,7 @@ impl StorageBackend for PostgresStorage {
     }
 
     async fn get_ref(&self, name: &str) -> Result<Option<String>> {
-        let client = self.client.lock().await;
+        let client = self.client;
         let rows = client
             .query(
                 "SELECT target FROM refs WHERE name = $1 AND agent_id = ''",
@@ -157,7 +164,7 @@ impl StorageBackend for PostgresStorage {
     }
 
     async fn list_refs(&self) -> Result<HashMap<String, String>> {
-        let client = self.client.lock().await;
+        let client = self.client;
         let rows = client
             .query(
                 "SELECT name, target FROM refs WHERE agent_id = ''",
@@ -173,7 +180,7 @@ impl StorageBackend for PostgresStorage {
     }
 
     async fn delete_ref(&self, name: &str) -> Result<bool> {
-        let client = self.client.lock().await;
+        let client = self.client;
         let count = client
             .execute(
                 "DELETE FROM refs WHERE name = $1 AND agent_id = ''",
@@ -185,7 +192,7 @@ impl StorageBackend for PostgresStorage {
     }
 
     async fn append_log(&self, entry: &LogEntry) -> Result<()> {
-        let client = self.client.lock().await;
+        let client = self.client;
         let details: Option<serde_json::Value> = entry.details.clone();
         client
             .execute(
@@ -208,7 +215,7 @@ impl StorageBackend for PostgresStorage {
     }
 
     async fn query_logs(&self, filter: &LogFilter) -> Result<Vec<LogEntry>> {
-        let client = self.client.lock().await;
+        let client = self.client;
 
         // Build a parameterised query dynamically.  We use $1, $2, … style
         // placeholders.  Collect the actual parameter values as trait objects
@@ -249,10 +256,13 @@ impl StorageBackend for PostgresStorage {
             format!("WHERE {}", conditions.join(" AND "))
         };
 
-        let limit_clause = filter
-            .limit
-            .map(|l| format!(" LIMIT {}", l))
-            .unwrap_or_default();
+        let mut p_limit: Option<i64> = None;
+        let limit_clause = if let Some(l) = filter.limit {
+            p_limit = Some(l as i64);
+            format!(" LIMIT ${}", param_idx)
+        } else {
+            String::new()
+        };
 
         let sql = format!(
             "SELECT id, timestamp, agent_id, action, message, commit_hash, details, level
@@ -273,6 +283,9 @@ impl StorageBackend for PostgresStorage {
             params.push(v);
         }
         if let Some(ref v) = p_since {
+            params.push(v);
+        }
+        if let Some(ref v) = p_limit {
             params.push(v);
         }
 
@@ -296,5 +309,23 @@ impl StorageBackend for PostgresStorage {
             .collect();
 
         Ok(entries)
+    }
+
+    async fn delete_object(&self, hash: &str) -> Result<bool> {
+        let client = self.client;
+        let count = client
+            .execute("DELETE FROM objects WHERE hash = $1", &[&hash])
+            .await
+            .map_err(|e| AgitError::Storage(e.to_string()))?;
+        Ok(count > 0)
+    }
+
+    async fn list_objects(&self) -> Result<Vec<String>> {
+        let client = self.client;
+        let rows = client
+            .query("SELECT hash FROM objects", &[])
+            .await
+            .map_err(|e| AgitError::Storage(e.to_string()))?;
+        Ok(rows.iter().map(|r| r.get(0)).collect())
     }
 }

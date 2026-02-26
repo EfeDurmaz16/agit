@@ -73,4 +73,10 @@ pub trait StorageBackend: Send + Sync {
 
     /// Query audit log entries.
     async fn query_logs(&self, filter: &LogFilter) -> Result<Vec<LogEntry>>;
+
+    /// Delete an object by hash. Returns true if the object existed.
+    async fn delete_object(&self, hash: &str) -> Result<bool>;
+
+    /// List all object hashes in storage.
+    async fn list_objects(&self) -> Result<Vec<String>>;
 }

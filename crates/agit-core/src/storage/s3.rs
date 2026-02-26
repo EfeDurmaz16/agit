@@ -20,9 +20,9 @@ const COMPRESS_THRESHOLD: usize = 1024;
 ///
 /// Layout inside the bucket:
 /// ```text
-/// objects/<hash>          – raw (or zstd-compressed) object bytes
-/// refs/<name>             – small JSON file: {"target": "<hash>"}
-/// logs/<agent_id>.jsonl   – append-only JSONL audit log per agent
+/// objects/<hash>                              – raw (or zstd-compressed) object bytes
+/// refs/<name>                                 – small JSON file: {"target": "<hash>"}
+/// logs/<agent_id>/<timestamp>_<uuid>.json     – one object per log entry (atomic append)
 /// ```
 ///
 /// Enable with the `s3` Cargo feature flag.
@@ -31,6 +31,8 @@ pub struct S3Storage {
     client: S3Client,
     bucket: String,
     prefix: String,
+    sqs_queue_url: Option<String>,
+    compress: bool,
 }
 
 #[cfg(feature = "s3")]
@@ -39,16 +41,23 @@ impl S3Storage {
     ///
     /// `bucket` – the S3 bucket name.
     /// `prefix` – optional key prefix (e.g. `"agit/"`) – use `""` for none.
+    /// `sqs_queue_url` – optional SQS queue URL for real-time log streaming.
     ///
     /// AWS credentials / region are resolved via the standard SDK chain
     /// (env vars, `~/.aws/credentials`, instance profile, etc.).
-    pub async fn new(bucket: impl Into<String>, prefix: impl Into<String>) -> Result<Self> {
+    pub async fn new(
+        bucket: impl Into<String>,
+        prefix: impl Into<String>,
+        sqs_queue_url: Option<String>,
+    ) -> Result<Self> {
         let config = aws_config::load_from_env().await;
         let client = S3Client::new(&config);
         let storage = S3Storage {
             client,
             bucket: bucket.into(),
             prefix: prefix.into(),
+            sqs_queue_url,
+            compress: true,
         };
         storage.initialize().await?;
         Ok(storage)
@@ -65,8 +74,38 @@ impl S3Storage {
         format!("{}refs/{}", self.prefix, safe)
     }
 
-    fn log_key(&self, agent_id: &str) -> String {
-        format!("{}logs/{}.jsonl", self.prefix, agent_id)
+    /// Build the S3 key prefix for log entries belonging to a given agent.
+    fn log_prefix(&self, agent_id: &str) -> String {
+        format!("{}logs/{}/", self.prefix, agent_id)
+    }
+
+    /// Build the S3 key prefix for all log entries.
+    fn all_logs_prefix(&self) -> String {
+        format!("{}logs/", self.prefix)
+    }
+
+    /// Download a key and return its raw bytes, or `None` if not found.
+    /// Unlike `get_bytes`, this returns `Ok(None)` for any SDK error (for
+    /// resilient log scanning).
+    async fn get_raw_object(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        match self
+            .client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                let bytes = resp
+                    .body
+                    .collect()
+                    .await
+                    .map_err(|e| AgitError::Storage(e.to_string()))?;
+                Ok(Some(bytes.into_bytes().to_vec()))
+            }
+            Err(_) => Ok(None),
+        }
     }
 
     /// Download a key and return its bytes, or `None` if not found.
@@ -102,6 +141,7 @@ impl S3Storage {
     }
 
     /// Upload bytes to a key, replacing any existing content.
+    /// Enforces AES-256 server-side encryption on all objects.
     async fn put_bytes(&self, key: &str, data: Vec<u8>, content_type: &str) -> Result<()> {
         self.client
             .put_object()
@@ -109,6 +149,7 @@ impl S3Storage {
             .key(key)
             .body(aws_sdk_s3::primitives::ByteStream::from(data))
             .content_type(content_type)
+            .server_side_encryption(aws_sdk_s3::types::ServerSideEncryption::Aes256)
             .send()
             .await
             .map_err(|e| AgitError::Storage(e.into_service_error().to_string()))?;
@@ -317,59 +358,176 @@ impl StorageBackend for S3Storage {
         Ok(true)
     }
 
-    /// Append the log entry to `logs/<agent_id>.jsonl`.
+    /// Append a log entry as an individual S3 object.
     ///
-    /// S3 does not support true append; we read the existing file, append a
-    /// line, and re-upload.  For high-volume production use, consider routing
-    /// log writes through a queue or using S3's multipart API.
+    /// Key pattern: `{prefix}/logs/{agent_id}/{timestamp}_{id}.json`
+    ///
+    /// Each entry is its own object, making concurrent writes fully atomic –
+    /// no read-modify-write race.  Optional zstd compression is applied when
+    /// `self.compress` is true.
     async fn append_log(&self, entry: &LogEntry) -> Result<()> {
-        let key = self.log_key(&entry.agent_id);
-        let existing = self.get_bytes(&key).await?.unwrap_or_default();
+        let key = format!(
+            "{}logs/{}/{}_{}.json",
+            self.prefix,
+            entry.agent_id,
+            entry.timestamp.replace(':', "-"),
+            entry.id,
+        );
 
-        let mut line = serde_json::to_vec(entry)
+        let data = serde_json::to_vec(entry)
             .map_err(|e| AgitError::Storage(e.to_string()))?;
-        line.push(b'\n');
 
-        let mut body = existing;
-        body.extend_from_slice(&line);
-        self.put_bytes(&key, body, "application/x-ndjson").await
-    }
-
-    /// Query the in-memory JSONL for `filter.agent_id` (required for S3;
-    /// cross-agent scans are not supported to avoid unbounded list operations).
-    async fn query_logs(&self, filter: &LogFilter) -> Result<Vec<LogEntry>> {
-        let agent_id = filter.agent_id.as_deref().unwrap_or("_global");
-        let key = self.log_key(agent_id);
-
-        let bytes = match self.get_bytes(&key).await? {
-            None => return Ok(Vec::new()),
-            Some(b) => b,
+        let body = if self.compress {
+            zstd::stream::encode_all(data.as_slice(), 3)
+                .map_err(|e| AgitError::Storage(format!("compression error: {e}")))?
+        } else {
+            data
         };
 
-        let mut entries: Vec<LogEntry> = bytes
-            .split(|&b| b == b'\n')
-            .filter(|line| !line.is_empty())
-            .filter_map(|line| serde_json::from_slice(line).ok())
-            .collect();
+        let content_type = if self.compress {
+            "application/zstd"
+        } else {
+            "application/json"
+        };
 
-        // Apply remaining filters in-memory.
-        if let Some(ref action) = filter.action {
-            entries.retain(|e| &e.action == action);
-        }
-        if let Some(ref level) = filter.level {
-            entries.retain(|e| &e.level == level);
-        }
-        if let Some(ref since) = filter.since {
-            entries.retain(|e| &e.timestamp >= since);
+        self.put_bytes(&key, body, content_type).await?;
+
+        // Optional SQS notification (placeholder – requires aws-sdk-sqs dep).
+        if let Some(_queue_url) = &self.sqs_queue_url {
+            // SQS integration placeholder: publish key + entry metadata to queue
+            // for real-time log streaming consumers.
         }
 
-        // JSONL is already insertion order; reverse for newest-first.
-        entries.reverse();
+        Ok(())
+    }
 
+    /// Query log entries by listing per-entry S3 objects and fetching each.
+    ///
+    /// When `filter.agent_id` is set the list is scoped to that agent's
+    /// prefix; otherwise all agents are scanned.  Remaining filters (action,
+    /// level, since) are applied in-memory after deserialization.
+    async fn query_logs(&self, filter: &LogFilter) -> Result<Vec<LogEntry>> {
+        let prefix = match &filter.agent_id {
+            Some(agent_id) => self.log_prefix(agent_id),
+            None => self.all_logs_prefix(),
+        };
+
+        let mut entries = Vec::new();
+        let mut continuation_token: Option<String> = None;
+
+        loop {
+            let mut req = self
+                .client
+                .list_objects_v2()
+                .bucket(&self.bucket)
+                .prefix(&prefix);
+
+            if let Some(ref token) = continuation_token {
+                req = req.continuation_token(token);
+            }
+
+            let resp = req
+                .send()
+                .await
+                .map_err(|e| AgitError::Storage(e.into_service_error().to_string()))?;
+
+            for obj in resp.contents() {
+                let key = obj.key().unwrap_or("");
+                if let Ok(Some(raw)) = self.get_raw_object(key).await {
+                    let bytes = if self.compress {
+                        zstd::stream::decode_all(raw.as_slice()).unwrap_or(raw)
+                    } else {
+                        raw
+                    };
+                    if let Ok(entry) = serde_json::from_slice::<LogEntry>(&bytes) {
+                        // Apply filters
+                        if let Some(ref action) = filter.action {
+                            if &entry.action != action {
+                                continue;
+                            }
+                        }
+                        if let Some(ref level) = filter.level {
+                            if &entry.level != level {
+                                continue;
+                            }
+                        }
+                        if let Some(ref since) = filter.since {
+                            if entry.timestamp < *since {
+                                continue;
+                            }
+                        }
+                        entries.push(entry);
+                    }
+                }
+            }
+
+            if resp.is_truncated().unwrap_or(false) {
+                continuation_token = resp.next_continuation_token().map(|s| s.to_string());
+            } else {
+                break;
+            }
+        }
+
+        // Sort by timestamp (ascending).
+        entries.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+
+        // Apply limit.
         if let Some(limit) = filter.limit {
             entries.truncate(limit);
         }
 
         Ok(entries)
+    }
+
+    async fn delete_object(&self, hash: &str) -> Result<bool> {
+        let key = self.object_key(hash);
+        self.client
+            .delete_object()
+            .bucket(&self.bucket)
+            .key(&key)
+            .send()
+            .await
+            .map_err(|e| AgitError::Storage(e.into_service_error().to_string()))?;
+        Ok(true)
+    }
+
+    async fn list_objects(&self) -> Result<Vec<String>> {
+        let prefix = format!("{}objects/", self.prefix);
+        let mut hashes = Vec::new();
+        let mut continuation_token: Option<String> = None;
+
+        loop {
+            let mut req = self
+                .client
+                .list_objects_v2()
+                .bucket(&self.bucket)
+                .prefix(&prefix);
+
+            if let Some(ref token) = continuation_token {
+                req = req.continuation_token(token);
+            }
+
+            let resp = req
+                .send()
+                .await
+                .map_err(|e| AgitError::Storage(e.into_service_error().to_string()))?;
+
+            for obj in resp.contents() {
+                if let Some(key) = obj.key() {
+                    // Extract hash from key: prefix/objects/<hash>
+                    if let Some(hash) = key.strip_prefix(&prefix) {
+                        hashes.push(hash.to_string());
+                    }
+                }
+            }
+
+            if resp.is_truncated().unwrap_or(false) {
+                continuation_token = resp.next_continuation_token().map(|s| s.to_string());
+            } else {
+                break;
+            }
+        }
+
+        Ok(hashes)
     }
 }
