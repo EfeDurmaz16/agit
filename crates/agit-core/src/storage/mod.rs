@@ -1,5 +1,17 @@
 pub mod sqlite;
 
+#[cfg(feature = "postgres")]
+pub mod postgres;
+
+#[cfg(feature = "s3")]
+pub mod s3;
+
+#[cfg(feature = "postgres")]
+pub use postgres::PostgresStorage;
+
+#[cfg(feature = "s3")]
+pub use s3::S3Storage;
+
 use async_trait::async_trait;
 use std::collections::HashMap;
 

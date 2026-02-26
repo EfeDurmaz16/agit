@@ -5,6 +5,11 @@ edition = "2021"
 description = "Git-like VCS engine for AI agents"
 license = "MIT"
 
+[features]
+default = []
+postgres = ["dep:tokio-postgres"]
+s3 = ["dep:aws-sdk-s3", "dep:aws-config", "dep:zstd"]
+
 [dependencies]
 sha2 = { workspace = true }
 serde = { workspace = true }
@@ -18,6 +23,14 @@ thiserror = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 async-trait = "0.1"
+
+# Optional: postgres backend
+tokio-postgres = { version = "0.7", optional = true }
+
+# Optional: S3 backend
+aws-sdk-s3 = { version = "1", optional = true }
+aws-config  = { version = "1", optional = true }
+zstd        = { version = "0.13", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
