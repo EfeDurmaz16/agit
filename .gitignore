@@ -1,7 +1,6 @@
 # Rust
 /target/
 **/*.rs.bk
-Cargo.lock
 
 # Python
 __pycache__/
@@ -26,6 +25,7 @@ htmlcov/
 
 # Node.js
 node_modules/
+.next/
 *.node
 ts-sdk/dist/
 ts-sdk/*.tgz

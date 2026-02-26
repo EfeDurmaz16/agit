@@ -1,8 +1,24 @@
 {
   "name": "@agit/core",
   "version": "0.1.0",
+  "description": "Native Rust bindings for AgentGit - Git-like version control for AI agents",
   "main": "index.js",
   "types": "index.d.ts",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/anthropics/agit.git",
+    "directory": "crates/agit-node"
+  },
+  "keywords": ["ai", "agents", "version-control", "git", "rust", "napi"],
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "*.node"
+  ],
   "napi": {
     "name": "agit-core",
     "triples": {}
