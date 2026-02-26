@@ -146,6 +146,15 @@ class PyRepository:
             """
         )
         con.commit()
+        # Load existing refs and branches from disk into memory
+        for row in con.execute("SELECT name, value FROM refs"):
+            name, value = row
+            self._refs[name] = value
+            if name != "HEAD":
+                self._branches[name] = value
+        # Load existing objects into memory
+        for row in con.execute("SELECT hash, data FROM objects"):
+            self._objects[row[0]] = bytes(row[1])
         con.close()
 
     # --- Core operations ---
@@ -189,6 +198,13 @@ class PyRepository:
             head = self._refs.get("HEAD", "main")
             if name == "HEAD":
                 return self._branches.get(head) or self._refs.get(head)
+            # Check if it's a raw commit hash that exists in object store
+            if name in self._objects:
+                return name
+        # Also check on-disk storage for commit hashes
+        if self._db_path:
+            if self._get(name) is not None:
+                return name
         return None
 
     # --- Public API (mirrors PyO3 bindings) ---
