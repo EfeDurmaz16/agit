@@ -1,0 +1,16 @@
+{
+  "name": "@agit/core",
+  "version": "0.1.0",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "napi": {
+    "name": "agit-core",
+    "triples": {}
+  },
+  "scripts": {
+    "build": "napi build --release"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^3.0"
+  }
+}

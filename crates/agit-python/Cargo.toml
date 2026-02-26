@@ -1,0 +1,17 @@
+[package]
+name = "agit-python"
+version = "0.1.0"
+edition = "2021"
+description = "Python bindings for agit-core via PyO3"
+license = "MIT"
+
+[lib]
+name = "agit_core"
+crate-type = ["cdylib"]
+
+[dependencies]
+agit-core = { path = "../agit-core" }
+pyo3 = { version = "0.23", features = ["extension-module"] }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true }

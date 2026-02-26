@@ -1,0 +1,20 @@
+[package]
+name = "agit-node"
+version = "0.1.0"
+edition = "2021"
+description = "Node.js bindings for agit-core via napi-rs"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+agit-core = { path = "../agit-core" }
+napi = { version = "3", features = ["async"] }
+napi-derive = "3"
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true }
+
+[build-dependencies]
+napi-build = "2"

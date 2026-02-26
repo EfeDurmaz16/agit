@@ -1,0 +1,17 @@
+{
+  "name": "@agit/sdk",
+  "version": "0.1.0",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest"
+  },
+  "dependencies": {
+    "@agit/core": "file:../crates/agit-node"
+  },
+  "devDependencies": {
+    "typescript": "^5.5",
+    "vitest": "^2.0"
+  }
+}

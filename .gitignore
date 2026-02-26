@@ -1,0 +1,51 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+*.so
+*.dylib
+*.dll
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+htmlcov/
+.coverage
+*.whl
+
+# Node.js
+node_modules/
+*.node
+ts-sdk/dist/
+ts-sdk/*.tgz
+crates/agit-node/index.js
+crates/agit-node/index.d.ts
+crates/agit-node/*.node
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+docker/*.env
+
+# agit data
+*.agit/
