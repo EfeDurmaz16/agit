@@ -37,6 +37,9 @@ pub enum AgitError {
 
     #[error("encryption error: {0}")]
     EncryptionError(String),
+
+    #[error("depth limit exceeded: {0}")]
+    DepthLimitExceeded(String),
 }
 
 pub type Result<T> = std::result::Result<T, AgitError>;

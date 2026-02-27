@@ -71,6 +71,7 @@ impl Repository {
     }
 
     /// Commit with additional metadata.
+    #[cfg_attr(feature = "observability", tracing::instrument(skip(self, state, metadata)))]
     pub async fn commit_with_metadata(
         &mut self,
         state: &AgentState,
@@ -192,6 +193,7 @@ impl Repository {
 
     /// Compute the diff between two commits.
     /// Uses Merkle trees for O(log N) performance on large states.
+    #[cfg_attr(feature = "observability", tracing::instrument(skip(self)))]
     pub async fn diff(&self, hash1: &str, hash2: &str) -> Result<StateDiff> {
         let state1 = self.get_state(hash1).await?;
         let state2 = self.get_state(hash2).await?;
@@ -206,6 +208,7 @@ impl Repository {
     }
 
     /// Merge a branch into the current branch.
+    #[cfg_attr(feature = "observability", tracing::instrument(skip(self)))]
     pub async fn merge(&mut self, branch: &str, strategy: MergeStrategy) -> Result<Hash> {
         let current_branch = match self.refs.get_head() {
             Head::Attached(name) => name.clone(),
@@ -332,6 +335,7 @@ impl Repository {
     }
 
     /// Revert to a previous state, creating a new revert commit.
+    #[cfg_attr(feature = "observability", tracing::instrument(skip(self)))]
     pub async fn revert(&mut self, to_hash: &str) -> Result<AgentState> {
         let state = self.get_state(to_hash).await?;
         let message = format!("revert to {}", &to_hash[..8.min(to_hash.len())]);
@@ -341,11 +345,14 @@ impl Repository {
 
     /// Find the merge base (lowest common ancestor) of two commits using BFS.
     pub async fn find_merge_base(&self, h1: &str, h2: &str) -> Result<Hash> {
+        const MAX_DEPTH: usize = 10_000;
+
         // BFS from both commits, find first intersection
-        let ancestors1 = self.collect_ancestors(h1).await?;
+        let ancestors1 = self.collect_ancestors(h1, MAX_DEPTH).await?;
 
         let mut queue = VecDeque::new();
         let mut visited = HashSet::new();
+        let mut depth = 0usize;
         queue.push_back(Hash::from(h2));
 
         while let Some(hash) = queue.pop_front() {
@@ -356,6 +363,13 @@ impl Repository {
                 continue;
             }
             visited.insert(hash.clone());
+
+            depth += 1;
+            if depth > MAX_DEPTH {
+                return Err(AgitError::DepthLimitExceeded(
+                    "merge base depth limit exceeded".to_string(),
+                ));
+            }
 
             if let Some(commit) = self.get_commit(hash.as_str()).await? {
                 for parent in commit.parent_hashes {
@@ -484,7 +498,7 @@ impl Repository {
         }
     }
 
-    async fn collect_ancestors(&self, hash: &str) -> Result<HashSet<Hash>> {
+    async fn collect_ancestors(&self, hash: &str, max_depth: usize) -> Result<HashSet<Hash>> {
         let mut ancestors = HashSet::new();
         let mut queue = VecDeque::new();
         queue.push_back(Hash::from(hash));
@@ -494,6 +508,12 @@ impl Repository {
                 continue;
             }
             ancestors.insert(h.clone());
+
+            if ancestors.len() > max_depth {
+                return Err(AgitError::DepthLimitExceeded(
+                    "ancestor traversal depth limit exceeded".to_string(),
+                ));
+            }
 
             if let Some(commit) = self.get_commit(h.as_str()).await? {
                 for parent in commit.parent_hashes {
