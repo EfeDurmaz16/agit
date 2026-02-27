@@ -7,9 +7,10 @@ license = "MIT"
 
 [features]
 default = ["encryption"]
-postgres = ["dep:tokio-postgres"]
-s3 = ["dep:aws-sdk-s3", "dep:aws-config", "dep:zstd"]
+postgres = ["dep:tokio-postgres", "dep:deadpool-postgres"]
+s3 = ["dep:aws-sdk-s3", "dep:aws-config", "dep:zstd", "dep:aws-sdk-sqs"]
 encryption = ["dep:aes-gcm", "dep:argon2"]
+observability = ["dep:tracing"]
 
 [dependencies]
 sha2 = { workspace = true }
@@ -27,15 +28,20 @@ async-trait = "0.1"
 
 # Optional: postgres backend
 tokio-postgres = { version = "0.7", optional = true }
+deadpool-postgres = { version = "0.14", optional = true }
 
 # Optional: S3 backend
 aws-sdk-s3 = { version = "1", optional = true }
 aws-config  = { version = "1", optional = true }
 zstd        = { version = "0.13", optional = true }
+aws-sdk-sqs = { version = "1", optional = true }
 
 # Optional: encryption
 aes-gcm = { workspace = true, optional = true }
 argon2 = { workspace = true, optional = true }
+
+# Optional: observability
+tracing = { version = "0.1", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }

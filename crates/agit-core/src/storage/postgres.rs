@@ -3,9 +3,9 @@ use async_trait::async_trait;
 #[cfg(feature = "postgres")]
 use std::collections::HashMap;
 #[cfg(feature = "postgres")]
-use std::sync::Arc;
+use deadpool_postgres::{Config, Pool, Runtime};
 #[cfg(feature = "postgres")]
-use tokio_postgres::{Client, NoTls};
+use tokio_postgres::NoTls;
 
 #[cfg(feature = "postgres")]
 use super::{LogEntry, LogFilter, StorageBackend};
@@ -14,16 +14,15 @@ use crate::error::{AgitError, Result};
 #[cfg(feature = "postgres")]
 use crate::types::ObjectType;
 
-/// PostgreSQL-backed storage with multi-tenant support via agent_id column.
+/// PostgreSQL-backed storage with multi-tenant support and connection pooling.
 ///
-/// Uses `Arc<Client>` instead of `Mutex<Client>` because `tokio_postgres::Client`
-/// methods take `&self` and internally pipeline requests over a single TCP connection.
-/// This allows concurrent queries without serializing behind a mutex.
+/// Uses `deadpool_postgres::Pool` for connection pooling, allowing efficient
+/// concurrent access without serializing behind a single connection.
 ///
 /// Enable with the `postgres` Cargo feature flag.
 #[cfg(feature = "postgres")]
 pub struct PostgresStorage {
-    client: Arc<Client>,
+    pool: Pool,
     namespace: String,
 }
 
@@ -39,20 +38,19 @@ impl PostgresStorage {
     ///
     /// The namespace is used to isolate refs and objects across tenants.
     pub async fn new_scoped(connection_str: &str, namespace: &str) -> Result<Self> {
-        let (client, connection) = tokio_postgres::connect(connection_str, NoTls)
-            .await
-            .map_err(|e| AgitError::Storage(e.to_string()))?;
-
-        // Spawn the connection driver; if it errors, the client will return
-        // errors on the next query.
-        tokio::spawn(async move {
-            if let Err(e) = connection.await {
-                eprintln!("agit postgres connection error: {e}");
-            }
+        let mut cfg = Config::new();
+        cfg.url = Some(connection_str.to_string());
+        cfg.pool = Some(deadpool_postgres::PoolConfig {
+            max_size: 16,
+            ..Default::default()
         });
 
+        let pool = cfg
+            .create_pool(Some(Runtime::Tokio1), NoTls)
+            .map_err(|e| AgitError::Storage(format!("pool creation error: {e}")))?;
+
         let storage = PostgresStorage {
-            client: Arc::new(client),
+            pool,
             namespace: namespace.to_string(),
         };
         storage.initialize().await?;
@@ -102,7 +100,8 @@ impl PostgresStorage {
 #[async_trait]
 impl StorageBackend for PostgresStorage {
     async fn initialize(&self) -> Result<()> {
-        let client = &self.client;
+        let client = self.pool.get().await
+            .map_err(|e| AgitError::Storage(format!("pool error: {e}")))?;
         client
             .batch_execute(
                 "
@@ -145,7 +144,8 @@ impl StorageBackend for PostgresStorage {
     }
 
     async fn put_object(&self, hash: &str, obj_type: ObjectType, data: &[u8]) -> Result<()> {
-        let client = &self.client;
+        let client = self.pool.get().await
+            .map_err(|e| AgitError::Storage(format!("pool error: {e}")))?;
         let type_str = obj_type.to_string();
         let scoped_hash = self.scope_hash(hash);
         client
@@ -161,7 +161,8 @@ impl StorageBackend for PostgresStorage {
     }
 
     async fn get_object(&self, hash: &str) -> Result<Option<Vec<u8>>> {
-        let client = &self.client;
+        let client = self.pool.get().await
+            .map_err(|e| AgitError::Storage(format!("pool error: {e}")))?;
         let scoped_hash = self.scope_hash(hash);
         let rows = client
             .query(
@@ -174,7 +175,8 @@ impl StorageBackend for PostgresStorage {
     }
 
     async fn has_object(&self, hash: &str) -> Result<bool> {
-        let client = &self.client;
+        let client = self.pool.get().await
+            .map_err(|e| AgitError::Storage(format!("pool error: {e}")))?;
         let scoped_hash = self.scope_hash(hash);
         let rows = client
             .query(
@@ -187,7 +189,8 @@ impl StorageBackend for PostgresStorage {
     }
 
     async fn set_ref(&self, name: &str, hash: &str) -> Result<()> {
-        let client = &self.client;
+        let client = self.pool.get().await
+            .map_err(|e| AgitError::Storage(format!("pool error: {e}")))?;
         let scoped_name = self.scope_ref(name);
         let scoped_hash = self.scope_hash(hash);
         client
@@ -204,7 +207,8 @@ impl StorageBackend for PostgresStorage {
     }
 
     async fn get_ref(&self, name: &str) -> Result<Option<String>> {
-        let client = &self.client;
+        let client = self.pool.get().await
+            .map_err(|e| AgitError::Storage(format!("pool error: {e}")))?;
         let scoped_name = self.scope_ref(name);
         let rows = client
             .query(
@@ -219,7 +223,8 @@ impl StorageBackend for PostgresStorage {
     }
 
     async fn list_refs(&self) -> Result<HashMap<String, String>> {
-        let client = &self.client;
+        let client = self.pool.get().await
+            .map_err(|e| AgitError::Storage(format!("pool error: {e}")))?;
         let rows = client
             .query(
                 "SELECT name, target FROM refs WHERE agent_id = ''",
@@ -243,7 +248,8 @@ impl StorageBackend for PostgresStorage {
     }
 
     async fn delete_ref(&self, name: &str) -> Result<bool> {
-        let client = &self.client;
+        let client = self.pool.get().await
+            .map_err(|e| AgitError::Storage(format!("pool error: {e}")))?;
         let scoped_name = self.scope_ref(name);
         let count = client
             .execute(
@@ -256,7 +262,8 @@ impl StorageBackend for PostgresStorage {
     }
 
     async fn append_log(&self, entry: &LogEntry) -> Result<()> {
-        let client = &self.client;
+        let client = self.pool.get().await
+            .map_err(|e| AgitError::Storage(format!("pool error: {e}")))?;
         let details_json: Option<String> = entry
             .details
             .as_ref()
@@ -284,7 +291,8 @@ impl StorageBackend for PostgresStorage {
     }
 
     async fn query_logs(&self, filter: &LogFilter) -> Result<Vec<LogEntry>> {
-        let client = &self.client;
+        let client = self.pool.get().await
+            .map_err(|e| AgitError::Storage(format!("pool error: {e}")))?;
 
         // Build a parameterised query dynamically.  We use $1, $2, … style
         // placeholders.  Collect the actual parameter values as trait objects
@@ -391,7 +399,8 @@ impl StorageBackend for PostgresStorage {
     }
 
     async fn delete_object(&self, hash: &str) -> Result<bool> {
-        let client = &self.client;
+        let client = self.pool.get().await
+            .map_err(|e| AgitError::Storage(format!("pool error: {e}")))?;
         let scoped_hash = self.scope_hash(hash);
         let count = client
             .execute("DELETE FROM objects WHERE hash = $1", &[&scoped_hash])
@@ -401,7 +410,8 @@ impl StorageBackend for PostgresStorage {
     }
 
     async fn list_objects(&self) -> Result<Vec<String>> {
-        let client = &self.client;
+        let client = self.pool.get().await
+            .map_err(|e| AgitError::Storage(format!("pool error: {e}")))?;
         let rows = client
             .query("SELECT hash FROM objects", &[])
             .await
