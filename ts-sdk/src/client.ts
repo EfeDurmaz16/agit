@@ -230,6 +230,12 @@ class PureTsRepository implements NativeRepository {
     let mergedState: AgentState;
     if (strategy === MergeStrategy.Theirs) {
       mergedState = theirEntry.state;
+    } else if (strategy === MergeStrategy.ThreeWay) {
+      // Real three-way merge: find merge base, then merge
+      const baseHash = this.findMergeBase(ourHash, theirHash);
+      const baseEntry = baseHash ? this.commits.get(baseHash) : null;
+      const baseState = baseEntry?.state ?? { memory: {}, world_state: {}, timestamp: "", cost: 0 };
+      mergedState = threeWayMergeState(baseState, ourEntry.state, theirEntry.state);
     } else {
       mergedState = ourEntry.state;
     }
@@ -243,6 +249,35 @@ class PureTsRepository implements NativeRepository {
       mergedState.cost,
       mergedState.metadata as Record<string, unknown> | undefined
     );
+  }
+
+  /** BFS to find lowest common ancestor of two commits. */
+  private findMergeBase(h1: string, h2: string): string | null {
+    const ancestors1 = new Set<string>();
+    const queue1 = [h1];
+    while (queue1.length > 0) {
+      const h = queue1.shift()!;
+      if (ancestors1.has(h)) continue;
+      ancestors1.add(h);
+      const entry = this.commits.get(h);
+      if (entry) {
+        for (const p of entry.parent_hashes) queue1.push(p);
+      }
+    }
+
+    const visited = new Set<string>();
+    const queue2 = [h2];
+    while (queue2.length > 0) {
+      const h = queue2.shift()!;
+      if (ancestors1.has(h)) return h;
+      if (visited.has(h)) continue;
+      visited.add(h);
+      const entry = this.commits.get(h);
+      if (entry) {
+        for (const p of entry.parent_hashes) queue2.push(p);
+      }
+    }
+    return null;
   }
 
   async log(branch?: string, limit?: number): Promise<Commit[]> {
@@ -305,6 +340,62 @@ class PureTsRepository implements NativeRepository {
   listBranches(): string[] {
     return Object.keys(this.branches);
   }
+}
+
+// Three-way merge helper for the pure-TS fallback.
+function threeWayMergeValue(
+  base: unknown,
+  ours: unknown,
+  theirs: unknown
+): unknown {
+  const baseStr = JSON.stringify(base);
+  const oursStr = JSON.stringify(ours);
+  const theirsStr = JSON.stringify(theirs);
+
+  // If ours didn't change from base, take theirs
+  if (baseStr === oursStr) return theirs;
+  // If theirs didn't change from base, take ours
+  if (baseStr === theirsStr) return ours;
+  // If both changed the same way, take either
+  if (oursStr === theirsStr) return ours;
+
+  // Both changed differently — recurse into objects, otherwise ours wins
+  if (
+    typeof base === "object" && base !== null && !Array.isArray(base) &&
+    typeof ours === "object" && ours !== null && !Array.isArray(ours) &&
+    typeof theirs === "object" && theirs !== null && !Array.isArray(theirs)
+  ) {
+    const result: Record<string, unknown> = {};
+    const allKeys = new Set([
+      ...Object.keys(base as Record<string, unknown>),
+      ...Object.keys(ours as Record<string, unknown>),
+      ...Object.keys(theirs as Record<string, unknown>),
+    ]);
+    for (const key of allKeys) {
+      const b = (base as Record<string, unknown>)[key];
+      const o = (ours as Record<string, unknown>)[key];
+      const t = (theirs as Record<string, unknown>)[key];
+      result[key] = threeWayMergeValue(b, o, t);
+    }
+    return result;
+  }
+
+  // Conflict: ours wins (consistent with Rust core)
+  return ours;
+}
+
+function threeWayMergeState(
+  base: AgentState,
+  ours: AgentState,
+  theirs: AgentState
+): AgentState {
+  return {
+    memory: threeWayMergeValue(base.memory, ours.memory, theirs.memory),
+    world_state: threeWayMergeValue(base.world_state, ours.world_state, theirs.world_state),
+    timestamp: ours.timestamp,
+    cost: ours.cost,
+    metadata: ours.metadata,
+  };
 }
 
 // Recursive JSON diff helper for the pure-TS fallback.
