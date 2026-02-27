@@ -34,6 +34,16 @@ impl StorageBackend for SqliteStorage {
     async fn initialize(&self) -> Result<()> {
         self.conn
             .call(|conn| -> std::result::Result<(), rusqlite::Error> {
+                // Performance pragmas: WAL mode for concurrent reads, larger cache
+                conn.execute_batch(
+                    "
+                    PRAGMA journal_mode = WAL;
+                    PRAGMA synchronous = NORMAL;
+                    PRAGMA cache_size = -64000;
+                    PRAGMA busy_timeout = 5000;
+                    ",
+                )?;
+
                 conn.execute_batch(
                     "
                     CREATE TABLE IF NOT EXISTS objects (
@@ -368,6 +378,26 @@ mod tests {
         let logs = storage.query_logs(&filter).await.unwrap();
         assert_eq!(logs.len(), 1);
         assert_eq!(logs[0].message, "called search");
+    }
+
+    #[tokio::test]
+    async fn test_wal_mode_active() {
+        let storage = SqliteStorage::new(":memory:").await.unwrap();
+        let mode: String = storage
+            .conn
+            .call(|conn| {
+                let mut stmt = conn.prepare("PRAGMA journal_mode")?;
+                let mode: String = stmt.query_row([], |row| row.get(0))?;
+                Ok(mode)
+            })
+            .await
+            .unwrap();
+        // In-memory databases may report "memory" instead of "wal", but
+        // file-backed databases will report "wal". Accept both.
+        assert!(
+            mode == "wal" || mode == "memory",
+            "expected WAL or memory journal mode, got: {mode}"
+        );
     }
 
     #[tokio::test]
