@@ -1,0 +1,39 @@
+# Build artifacts
+target/
+node_modules/
+dist/
+*.pyc
+__pycache__/
+*.pyo
+*.egg-info/
+
+# Version control
+.git/
+.gitignore
+
+# IDE and tool files
+.claude/
+.omc/
+.vscode/
+*.swp
+*.swo
+
+# Environment and secrets
+.env
+*.env
+docker/.env
+
+# Logs and caches
+*.log
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+
+# Web build output
+web/.next/
+ts-sdk/dist/
+
+# Virtual environments
+.venv/
+venv/
