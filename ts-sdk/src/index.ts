@@ -24,3 +24,8 @@ export type {
   RepoStatus,
   StateDiff,
 } from "./types.js";
+
+// Integration exports
+export { createAgitClaudeHooks, type ClaudeHooks, type ClaudeHookContext } from "./integrations/claude-sdk.js";
+export { AgitAgentHooks, type ToolEvent } from "./integrations/openai-agents.js";
+export { AgitCheckpointSaver, type Checkpoint, type CheckpointTuple, type CheckpointMetadata } from "./integrations/langgraph.js";
