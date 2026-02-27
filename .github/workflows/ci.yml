@@ -11,9 +11,35 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
+  security:
+    name: Security Scanning
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: TruffleHog Secrets Scan
+        uses: trufflesecurity/trufflehog@v3
+        with:
+          extra_args: --only-verified
+
+      - name: Build Docker Image for Scanning
+        run: docker build -f docker/Dockerfile -t agit:scan . || true
+
+      - name: Trivy Container Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: "agit:scan"
+          format: "table"
+          exit-code: "1"
+          severity: "CRITICAL,HIGH"
+        continue-on-error: true
+
   rust:
     name: Rust (test + clippy + fmt)
     runs-on: ubuntu-latest
+    needs: [security]
     steps:
       - uses: actions/checkout@v4
 
@@ -32,10 +58,13 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+      - name: Test with observability feature
+        run: cargo test -p agit-core --features observability
+
   python:
     name: Python (test + lint)
     runs-on: ubuntu-latest
-    needs: rust
+    needs: [security, rust]
     steps:
       - uses: actions/checkout@v4
 
@@ -72,7 +101,7 @@ jobs:
   typescript:
     name: TypeScript (build + test)
     runs-on: ubuntu-latest
-    needs: rust
+    needs: [security, rust]
     steps:
       - uses: actions/checkout@v4
 

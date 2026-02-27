@@ -82,6 +82,29 @@ jobs:
         with:
           packages-dir: dist/
 
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign Release Artifacts
+        run: |
+          for f in dist/*.whl dist/*.tar.gz; do
+            [ -f "$f" ] && cosign sign-blob --yes "$f" --output-signature "${f}.sig"
+          done
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          format: spdx-json
+          output-file: sbom.spdx.json
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.spdx.json
+
   publish-npm:
     name: Publish to npm
     runs-on: ubuntu-latest
