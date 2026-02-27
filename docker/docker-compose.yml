@@ -102,9 +102,9 @@ services:
     image: postgres:16-alpine
     container_name: agit-postgres
     environment:
-      POSTGRES_DB: agit
-      POSTGRES_USER: agit
-      POSTGRES_PASSWORD: agit_dev_password
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
       - "5432:5432"
     volumes:

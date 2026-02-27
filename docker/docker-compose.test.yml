@@ -4,9 +4,9 @@ services:
   postgres-test:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: agit_test
-      POSTGRES_PASSWORD: agit_test_password
-      POSTGRES_DB: agit_test
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     ports:
       - "5433:5432"
     healthcheck:
