@@ -3,6 +3,8 @@ use async_trait::async_trait;
 #[cfg(feature = "s3")]
 use aws_sdk_s3::Client as S3Client;
 #[cfg(feature = "s3")]
+use aws_sdk_sqs::Client as SqsClient;
+#[cfg(feature = "s3")]
 use std::collections::HashMap;
 
 #[cfg(feature = "s3")]
@@ -32,6 +34,7 @@ pub struct S3Storage {
     bucket: String,
     prefix: String,
     sqs_queue_url: Option<String>,
+    sqs_client: Option<SqsClient>,
     compress: bool,
 }
 
@@ -52,11 +55,13 @@ impl S3Storage {
     ) -> Result<Self> {
         let config = aws_config::load_from_env().await;
         let client = S3Client::new(&config);
+        let sqs_client = sqs_queue_url.as_ref().map(|_| SqsClient::new(&config));
         let storage = S3Storage {
             client,
             bucket: bucket.into(),
             prefix: prefix.into(),
             sqs_queue_url,
+            sqs_client,
             compress: true,
         };
         storage.initialize().await?;
@@ -392,10 +397,22 @@ impl StorageBackend for S3Storage {
 
         self.put_bytes(&key, body, content_type).await?;
 
-        // Optional SQS notification (placeholder – requires aws-sdk-sqs dep).
-        if let Some(_queue_url) = &self.sqs_queue_url {
-            // SQS integration placeholder: publish key + entry metadata to queue
-            // for real-time log streaming consumers.
+        // Send SQS notification for real-time log streaming
+        if let (Some(queue_url), Some(sqs)) = (&self.sqs_queue_url, &self.sqs_client) {
+            let msg = serde_json::json!({
+                "event": "log_append",
+                "agent_id": &entry.agent_id,
+                "action": &entry.action,
+                "commit_hash": &entry.commit_hash,
+                "timestamp": &entry.timestamp,
+                "key": &key,
+            });
+            let _ = sqs
+                .send_message()
+                .queue_url(queue_url)
+                .message_body(msg.to_string())
+                .send()
+                .await;
         }
 
         Ok(())
