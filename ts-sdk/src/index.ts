@@ -29,3 +29,4 @@ export type {
 export { createAgitClaudeHooks, type ClaudeHooks, type ClaudeHookContext } from "./integrations/claude-sdk.js";
 export { AgitAgentHooks, type ToolEvent } from "./integrations/openai-agents.js";
 export { AgitCheckpointSaver, type Checkpoint, type CheckpointTuple, type CheckpointMetadata } from "./integrations/langgraph.js";
+export { AgitA2AHooks, type A2AMessage, type A2APart, type A2ATaskEvent, type A2AArtifact } from "./integrations/a2a.js";
