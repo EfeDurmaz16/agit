@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, Query
 
 from agit.engine.executor import ExecutionEngine
 
-from .auth import validate_api_key
+from .auth import Permission, require_permission, validate_api_key
 from .models import (
     AuditEntry,
     AuditResponse,
@@ -88,7 +88,7 @@ async def health() -> HealthResponse:
 @router.post("/commits", response_model=CommitResponse)
 async def create_commit(
     req: CommitRequest,
-    tenant_info: dict[str, str] = Depends(validate_api_key),
+    tenant_info: dict[str, str] = Depends(require_permission(Permission.WRITE)),
 ) -> CommitResponse:
     """Commit agent state."""
     engine = _get_engine(tenant_info)
@@ -99,7 +99,7 @@ async def create_commit(
 @router.get("/commits", response_model=CommitsResponse)
 async def list_commits(
     limit: int = Query(default=50, le=500),
-    tenant_info: dict[str, str] = Depends(validate_api_key),
+    tenant_info: dict[str, str] = Depends(require_permission(Permission.READ)),
 ) -> CommitsResponse:
     """List commit history."""
     engine = _get_engine(tenant_info)
@@ -121,7 +121,7 @@ async def list_commits(
 @router.get("/commits/{commit_hash}", response_model=CommitWithState)
 async def get_commit_state(
     commit_hash: str,
-    tenant_info: dict[str, str] = Depends(validate_api_key),
+    tenant_info: dict[str, str] = Depends(require_permission(Permission.READ)),
 ) -> CommitWithState:
     """Get state at a specific commit."""
     engine = _get_engine(tenant_info)
@@ -145,7 +145,7 @@ async def get_commit_state(
 async def get_diff(
     hash1: str = Query(description="Base commit hash"),
     hash2: str = Query(description="Target commit hash"),
-    tenant_info: dict[str, str] = Depends(validate_api_key),
+    tenant_info: dict[str, str] = Depends(require_permission(Permission.READ)),
 ) -> DiffResponse:
     """Get diff between two commits."""
     engine = _get_engine(tenant_info)
@@ -169,7 +169,7 @@ async def get_diff(
 @router.post("/branches", response_model=BranchResponse)
 async def create_branch(
     req: BranchRequest,
-    tenant_info: dict[str, str] = Depends(validate_api_key),
+    tenant_info: dict[str, str] = Depends(require_permission(Permission.WRITE)),
 ) -> BranchResponse:
     """Create a new branch."""
     engine = _get_engine(tenant_info)
@@ -180,7 +180,7 @@ async def create_branch(
 
 @router.get("/branches", response_model=BranchList)
 async def list_branches(
-    tenant_info: dict[str, str] = Depends(validate_api_key),
+    tenant_info: dict[str, str] = Depends(require_permission(Permission.READ)),
 ) -> BranchList:
     """List all branches."""
     engine = _get_engine(tenant_info)
@@ -193,7 +193,7 @@ async def list_branches(
 @router.post("/checkout", response_model=CheckoutResponse)
 async def checkout(
     req: CheckoutRequest,
-    tenant_info: dict[str, str] = Depends(validate_api_key),
+    tenant_info: dict[str, str] = Depends(require_permission(Permission.WRITE)),
 ) -> CheckoutResponse:
     """Checkout a branch or commit."""
     engine = _get_engine(tenant_info)
@@ -204,7 +204,7 @@ async def checkout(
 @router.post("/merge", response_model=MergeResponse)
 async def merge(
     req: MergeRequest,
-    tenant_info: dict[str, str] = Depends(validate_api_key),
+    tenant_info: dict[str, str] = Depends(require_permission(Permission.WRITE)),
 ) -> MergeResponse:
     """Merge a branch into HEAD."""
     engine = _get_engine(tenant_info)
@@ -215,7 +215,7 @@ async def merge(
 @router.post("/revert", response_model=RevertResponse)
 async def revert(
     req: RevertRequest,
-    tenant_info: dict[str, str] = Depends(validate_api_key),
+    tenant_info: dict[str, str] = Depends(require_permission(Permission.WRITE)),
 ) -> RevertResponse:
     """Revert to a previous commit."""
     engine = _get_engine(tenant_info)
@@ -226,7 +226,7 @@ async def revert(
 @router.get("/audit", response_model=AuditResponse)
 async def audit_log(
     limit: int = Query(default=100, le=1000),
-    tenant_info: dict[str, str] = Depends(validate_api_key),
+    tenant_info: dict[str, str] = Depends(require_permission(Permission.READ)),
 ) -> AuditResponse:
     """Get audit log entries."""
     engine = _get_engine(tenant_info)
@@ -250,7 +250,7 @@ async def search(
     q: str = Query(description="Search query"),
     action_type: str | None = Query(default=None),
     limit: int = Query(default=20, le=100),
-    tenant_info: dict[str, str] = Depends(validate_api_key),
+    tenant_info: dict[str, str] = Depends(require_permission(Permission.READ)),
 ) -> SearchResponse:
     """Search commits by message or action type."""
     engine = _get_engine(tenant_info)
