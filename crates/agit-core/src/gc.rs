@@ -81,7 +81,7 @@ pub async fn collect_reachable(
 pub async fn gc(
     storage: &dyn StorageBackend,
     refs: &RefStore,
-    _keep_last_n: usize,
+    keep_last_n: usize,
 ) -> Result<GcResult> {
     // Collect all branch tips as roots
     let branches = refs.list_branches();
@@ -97,6 +97,36 @@ pub async fn gc(
 
     // Find all reachable objects
     let reachable = collect_reachable(storage, &roots).await?;
+
+    // Additionally mark the last N commits per branch as reachable
+    let mut reachable = reachable;
+    if keep_last_n > 0 {
+        for root in &roots {
+            let mut queue: VecDeque<String> = VecDeque::new();
+            queue.push_back(root.0.clone());
+            let mut count = 0;
+
+            while let Some(hash) = queue.pop_front() {
+                if count >= keep_last_n {
+                    break;
+                }
+                reachable.insert(hash.clone());
+                count += 1;
+
+                if let Some(data) = storage.get_object(&hash).await? {
+                    if let Ok(commit) = serde_json::from_slice::<Commit>(&data) {
+                        // Mark the tree blob as reachable too
+                        reachable.insert(commit.tree_hash.0.clone());
+                        for parent in &commit.parent_hashes {
+                            if !reachable.contains(&parent.0) {
+                                queue.push_back(parent.0.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     // List all objects and delete unreachable ones
     let all_objects = storage.list_objects().await?;
