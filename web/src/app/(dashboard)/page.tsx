@@ -1,8 +1,9 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { getDemoData } from "@/lib/api";
+import { getDemoData, api } from "@/lib/api";
 import { truncateHash, relativeTime } from "@/lib/utils";
 import {
   AreaChart,
@@ -51,16 +52,44 @@ export default function DashboardPage() {
   const agents = [...new Set(commits.map((c) => c.author))];
   const chartData = buildChartData();
 
+  const [apiConnected, setApiConnected] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    api.getHealth()
+      .then(() => setApiConnected(true))
+      .catch(() => setApiConnected(false));
+  }, []);
+
   return (
     <div>
       {/* Header */}
-      <div className="mb-8">
-        <h1 className="text-2xl font-semibold tracking-tight text-stone-900">
-          Dashboard
-        </h1>
-        <p className="text-sm text-stone-500 mt-1">
-          Agent version control overview
-        </p>
+      <div className="mb-8 flex items-start justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight text-stone-900">
+            Dashboard
+          </h1>
+          <p className="text-sm text-stone-500 mt-1">
+            Agent version control overview
+          </p>
+        </div>
+        <div className="flex items-center gap-2 mt-1">
+          <span
+            className={`w-2 h-2 rounded-full ${
+              apiConnected === null
+                ? "bg-stone-300"
+                : apiConnected
+                ? "bg-emerald-500"
+                : "bg-red-500"
+            }`}
+          />
+          <span className="text-xs text-stone-500">
+            {apiConnected === null
+              ? "Checking..."
+              : apiConnected
+              ? "Connected"
+              : "Disconnected"}
+          </span>
+        </div>
       </div>
 
       {/* Metrics */}
