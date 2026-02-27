@@ -1,11 +1,25 @@
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
+use std::sync::OnceLock;
 
 use agit_core::types::MergeStrategy;
 use agit_core::{Repository, SqliteStorage};
 
 use crate::convert::{agent_state_to_py, commit_to_py, diff_to_py, py_to_agent_state};
 use crate::types::{PyAgentState, PyCommit, PyStateDiff};
+
+/// Shared Tokio runtime across all PyRepository instances.
+/// Avoids the overhead of creating a new runtime per repository.
+static SHARED_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+
+fn get_runtime() -> &'static tokio::runtime::Runtime {
+    SHARED_RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("failed to create shared Tokio runtime")
+    })
+}
 
 /// Convert an agit_core::AgitError to a Python RuntimeError.
 fn agit_err_to_py(e: agit_core::AgitError) -> PyErr {
@@ -41,7 +55,6 @@ fn parse_action_type(s: Option<&str>) -> agit_core::types::ActionType {
 #[pyclass(name = "Repository")]
 pub struct PyRepository {
     inner: Option<Repository>,
-    runtime: tokio::runtime::Runtime,
 }
 
 #[pymethods]
@@ -51,8 +64,7 @@ impl PyRepository {
     #[new]
     #[pyo3(signature = (path, agent_id=None))]
     fn new(path: &str, agent_id: Option<&str>) -> PyResult<Self> {
-        let runtime = tokio::runtime::Runtime::new()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
+        let runtime = get_runtime();
 
         let repo = runtime.block_on(async {
             let db_path = if path.ends_with(".db") || path == ":memory:" {
@@ -70,7 +82,6 @@ impl PyRepository {
 
         Ok(PyRepository {
             inner: Some(repo),
-            runtime,
         })
     }
 
@@ -88,7 +99,7 @@ impl PyRepository {
             .inner
             .as_mut()
             .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("repository closed"))?;
-        self.runtime
+        get_runtime()
             .block_on(repo.commit(&core_state, message, action))
             .map(|h| h.0)
             .map_err(agit_err_to_py)
@@ -101,7 +112,7 @@ impl PyRepository {
             .inner
             .as_mut()
             .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("repository closed"))?;
-        self.runtime
+        get_runtime()
             .block_on(repo.branch(name, from_ref))
             .map_err(agit_err_to_py)
     }
@@ -112,8 +123,7 @@ impl PyRepository {
             .inner
             .as_mut()
             .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("repository closed"))?;
-        let state = self
-            .runtime
+        let state = get_runtime()
             .block_on(repo.checkout(target))
             .map_err(agit_err_to_py)?;
         Ok(agent_state_to_py(&state))
@@ -125,8 +135,7 @@ impl PyRepository {
             .inner
             .as_ref()
             .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("repository closed"))?;
-        let diff = self
-            .runtime
+        let diff = get_runtime()
             .block_on(repo.diff(hash1, hash2))
             .map_err(agit_err_to_py)?;
         Ok(diff_to_py(&diff))
@@ -141,7 +150,7 @@ impl PyRepository {
             .inner
             .as_mut()
             .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("repository closed"))?;
-        self.runtime
+        get_runtime()
             .block_on(repo.merge(branch, strat))
             .map(|h| h.0)
             .map_err(agit_err_to_py)
@@ -155,8 +164,7 @@ impl PyRepository {
             .inner
             .as_ref()
             .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("repository closed"))?;
-        let commits = self
-            .runtime
+        let commits = get_runtime()
             .block_on(repo.log(branch, n))
             .map_err(agit_err_to_py)?;
         Ok(commits.iter().map(commit_to_py).collect())
@@ -168,8 +176,7 @@ impl PyRepository {
             .inner
             .as_mut()
             .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("repository closed"))?;
-        let state = self
-            .runtime
+        let state = get_runtime()
             .block_on(repo.revert(to_hash))
             .map_err(agit_err_to_py)?;
         Ok(agent_state_to_py(&state))
@@ -181,8 +188,7 @@ impl PyRepository {
             .inner
             .as_ref()
             .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("repository closed"))?;
-        let state = self
-            .runtime
+        let state = get_runtime()
             .block_on(repo.get_state(hash))
             .map_err(agit_err_to_py)?;
         Ok(agent_state_to_py(&state))
@@ -224,7 +230,7 @@ impl PyRepository {
             .inner
             .as_mut()
             .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("repository closed"))?;
-        self.runtime
+        get_runtime()
             .block_on(repo.delete_branch(name))
             .map_err(agit_err_to_py)
     }
@@ -253,8 +259,7 @@ impl PyRepository {
             .inner
             .as_ref()
             .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("repository closed"))?;
-        let result = self
-            .runtime
+        let result = get_runtime()
             .block_on(repo.gc(keep_last_n))
             .map_err(agit_err_to_py)?;
 
