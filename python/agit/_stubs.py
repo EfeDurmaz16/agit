@@ -378,37 +378,35 @@ class PyRepository:
             self._refs.pop(name, None)
 
     def set_encryption_key(self, key: str) -> None:
-        """Enable field-level encryption using AES-256-GCM (via Fernet-like scheme)."""
-        import hashlib
+        """Enable field-level encryption using Fernet (AES-128-CBC + HMAC-SHA256)."""
         import base64
+        from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.fernet import Fernet
         from dataclasses import dataclass
 
-        key_bytes = hashlib.sha256(key.encode()).digest()
+        # Derive a Fernet-compatible key using PBKDF2
+        salt = b"agit-encryption-salt-v1"
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=salt,
+            iterations=100_000,
+        )
+        derived = kdf.derive(key.encode())
+        fernet_key = base64.urlsafe_b64encode(derived)
 
         @dataclass
         class _Encryptor:
-            key: bytes
+            fernet: Fernet
 
             def encrypt(self, plaintext: bytes) -> bytes:
-                """Simple XOR-based encryption for stubs (NOT production-grade)."""
-                import os
-                nonce = os.urandom(16)
-                key_stream = hashlib.sha256(self.key + nonce).digest()
-                # Repeat key_stream to cover plaintext length
-                full_stream = key_stream * ((len(plaintext) // len(key_stream)) + 1)
-                encrypted = bytes(a ^ b for a, b in zip(plaintext, full_stream))
-                return nonce + encrypted
+                return self.fernet.encrypt(plaintext)
 
             def decrypt(self, ciphertext: bytes) -> bytes:
-                if len(ciphertext) < 16:
-                    raise ValueError("Ciphertext too short")
-                nonce = ciphertext[:16]
-                encrypted = ciphertext[16:]
-                key_stream = hashlib.sha256(self.key + nonce).digest()
-                full_stream = key_stream * ((len(encrypted) // len(key_stream)) + 1)
-                return bytes(a ^ b for a, b in zip(encrypted, full_stream))
+                return self.fernet.decrypt(ciphertext)
 
-        self._encryptor = _Encryptor(key=key_bytes)
+        self._encryptor = _Encryptor(fernet=Fernet(fernet_key))
 
     def _encrypt_state(self, state_dict: dict[str, Any]) -> dict[str, Any]:
         """Encrypt memory and world_state fields if encryptor is set."""
