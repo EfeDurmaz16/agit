@@ -3,12 +3,36 @@ from __future__ import annotations
 
 import logging
 import os
+import json as _json
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
-from .middleware import RateLimitMiddleware, RedisRateLimitMiddleware
+from .middleware import RateLimitMiddleware, RedisRateLimitMiddleware, CSRFMiddleware, CorrelationIdMiddleware
 from .routes import router
+
+# Structured JSON logging
+_log_level = os.environ.get("AGIT_LOG_LEVEL", "INFO").upper()
+logging.basicConfig(level=getattr(logging, _log_level, logging.INFO))
+
+class _JsonFormatter(logging.Formatter):
+    """Simple JSON log formatter for structured logging."""
+    def format(self, record: logging.LogRecord) -> str:
+        log_obj = {
+            "timestamp": self.formatTime(record),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        if hasattr(record, "correlation_id"):
+            log_obj["correlation_id"] = record.correlation_id
+        if record.exc_info and record.exc_info[0]:
+            log_obj["exception"] = self.formatException(record.exc_info)
+        return _json.dumps(log_obj)
+
+# Apply JSON formatter to root logger
+for _handler in logging.root.handlers:
+    _handler.setFormatter(_JsonFormatter())
 
 logger = logging.getLogger("agit.server")
 
@@ -34,6 +58,12 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["*"],
 )
+
+# CSRF protection for mutation endpoints
+app.add_middleware(CSRFMiddleware)
+
+# Request correlation ID for tracing
+app.add_middleware(CorrelationIdMiddleware)
 
 # Rate limiting (distributed if Redis is configured)
 _redis_url = os.environ.get("AGIT_REDIS_URL", "").strip()

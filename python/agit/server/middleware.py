@@ -128,3 +128,51 @@ class RedisRateLimitMiddleware(BaseHTTPMiddleware):
         response.headers["X-RateLimit-Limit"] = str(self.max_requests)
         response.headers["X-RateLimit-Remaining"] = str(max(0, self.max_requests - count))
         return response
+
+
+class CSRFMiddleware(BaseHTTPMiddleware):
+    """CSRF protection for mutation endpoints.
+
+    Requires X-Requested-With or X-CSRF-Token header on POST/PUT/DELETE.
+    GET, HEAD, and OPTIONS are exempt.
+    """
+
+    SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+    async def dispatch(self, request: Request, call_next: Any) -> Response:
+        if request.method in self.SAFE_METHODS:
+            return await call_next(request)
+
+        has_xhr = request.headers.get("x-requested-with", "").lower() == "xmlhttprequest"
+        has_csrf = bool(request.headers.get("x-csrf-token"))
+
+        if not has_xhr and not has_csrf:
+            return Response(
+                content='{"ok": false, "error": "CSRF validation failed"}',
+                status_code=403,
+                media_type="application/json",
+            )
+
+        return await call_next(request)
+
+
+class CorrelationIdMiddleware(BaseHTTPMiddleware):
+    """Adds a correlation ID to every request/response for tracing.
+
+    Uses the incoming X-Request-ID header if present, otherwise generates a UUID4.
+    The correlation ID is attached to the response and made available via contextvars.
+    """
+
+    async def dispatch(self, request: Request, call_next: Any) -> Response:
+        import uuid
+        import contextvars
+
+        correlation_id = request.headers.get("x-request-id") or str(uuid.uuid4())
+
+        # Store in contextvars for use in logging
+        _correlation_var = contextvars.ContextVar("correlation_id", default="")
+        _correlation_var.set(correlation_id)
+
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = correlation_id
+        return response

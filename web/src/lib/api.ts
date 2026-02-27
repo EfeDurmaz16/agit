@@ -56,6 +56,7 @@ interface BranchListResponse {
 async function fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
+    "X-Requested-With": "XMLHttpRequest",
     ...(options?.headers as Record<string, string> | undefined),
   };
   if (API_KEY) {
