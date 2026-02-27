@@ -30,13 +30,15 @@
     "@anthropic-ai/sdk": ">=0.20.0",
     "openai": ">=4.0.0",
     "@langchain/langgraph": ">=0.1.0",
-    "a2a-sdk": ">=0.1.0"
+    "a2a-sdk": ">=0.1.0",
+    "@fides/sdk": ">=0.1.0"
   },
   "peerDependenciesMeta": {
     "@anthropic-ai/sdk": { "optional": true },
     "openai": { "optional": true },
     "@langchain/langgraph": { "optional": true },
-    "a2a-sdk": { "optional": true }
+    "a2a-sdk": { "optional": true },
+    "@fides/sdk": { "optional": true }
   },
   "devDependencies": {
     "@types/node": "^22",
