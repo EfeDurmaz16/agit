@@ -1,4 +1,5 @@
 pub mod bisect;
+pub mod causal;
 pub mod encryption;
 pub mod error;
 pub mod events;
@@ -29,4 +30,5 @@ pub use retention::{RetentionPolicy, RetentionResult, enforce_retention, preview
 pub use types::{ActionType, ChangeType, Hash, MergeStrategy, ObjectType};
 pub use events::{AgitEvent, InMemoryEventBus};
 pub use bisect::{BisectSession, BisectResult, BisectState};
+pub use causal::{CausalGraph, CausalNode, CausalEdge, CausalRelation};
 pub use migration::{MigrationResult, MigrationApplyResult, CURRENT_SCHEMA_VERSION, apply_schema_migrations, migrate_data};
