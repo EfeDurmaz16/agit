@@ -1,5 +1,7 @@
+pub mod bisect;
 pub mod encryption;
 pub mod error;
+pub mod events;
 pub mod gc;
 pub mod hash;
 pub mod migration;
@@ -25,3 +27,6 @@ pub use storage::{LogEntry, LogFilter, StorageBackend};
 pub use gc::{GcResult, SquashResult};
 pub use retention::{RetentionPolicy, RetentionResult, enforce_retention, preview_retention};
 pub use types::{ActionType, ChangeType, Hash, MergeStrategy, ObjectType};
+pub use events::{AgitEvent, InMemoryEventBus};
+pub use bisect::{BisectSession, BisectResult, BisectState};
+pub use migration::{MigrationResult, MigrationApplyResult, CURRENT_SCHEMA_VERSION, apply_schema_migrations, migrate_data};

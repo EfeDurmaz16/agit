@@ -12,6 +12,19 @@ pub struct SqliteStorage {
 }
 
 impl SqliteStorage {
+    /// Run a migration closure with direct access to the SQLite connection.
+    /// Used by the migration framework for schema upgrades.
+    pub async fn run_migration<F, T>(&self, f: F) -> Result<T>
+    where
+        F: FnOnce(&rusqlite::Connection) -> std::result::Result<T, rusqlite::Error> + Send + 'static,
+        T: Send + 'static,
+    {
+        self.conn
+            .call(f)
+            .await
+            .map_err(|e: tokio_rusqlite::Error| AgitError::Storage(e.to_string()))
+    }
+
     pub async fn new(path: &str) -> Result<Self> {
         let conn = if path == ":memory:" {
             Connection::open_in_memory()
