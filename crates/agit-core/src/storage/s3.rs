@@ -547,4 +547,15 @@ impl StorageBackend for S3Storage {
 
         Ok(hashes)
     }
+
+    async fn delete_logs_before(&self, _before_timestamp: &str) -> Result<usize> {
+        // S3 stores logs as individual objects with timestamp in key prefix.
+        // For now, log pruning is not supported on S3 backend — use SQS lifecycle rules instead.
+        Ok(0)
+    }
+
+    async fn prune_logs_excess(&self, _keep: usize) -> Result<usize> {
+        // S3 log pruning deferred to S3 lifecycle policies.
+        Ok(0)
+    }
 }

@@ -79,4 +79,12 @@ pub trait StorageBackend: Send + Sync {
 
     /// List all object hashes in storage.
     async fn list_objects(&self) -> Result<Vec<String>>;
+
+    /// Delete log entries older than the given ISO 8601 timestamp.
+    /// Returns the number of entries deleted.
+    async fn delete_logs_before(&self, before_timestamp: &str) -> Result<usize>;
+
+    /// Delete excess log entries, keeping only the most recent `keep` entries.
+    /// Returns the number of entries deleted.
+    async fn prune_logs_excess(&self, keep: usize) -> Result<usize>;
 }

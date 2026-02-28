@@ -306,6 +306,37 @@ impl StorageBackend for SqliteStorage {
             .await
             .map_err(|e: tokio_rusqlite::Error| AgitError::Storage(e.to_string()))
     }
+
+    async fn delete_logs_before(&self, before_timestamp: &str) -> Result<usize> {
+        let ts = before_timestamp.to_string();
+        self.conn
+            .call(move |conn| -> std::result::Result<usize, rusqlite::Error> {
+                let count = conn.execute(
+                    "DELETE FROM logs WHERE timestamp < ?1",
+                    rusqlite::params![ts],
+                )?;
+                Ok(count)
+            })
+            .await
+            .map_err(|e: tokio_rusqlite::Error| AgitError::Storage(e.to_string()))
+    }
+
+    async fn prune_logs_excess(&self, keep: usize) -> Result<usize> {
+        let keep = keep as i64;
+        self.conn
+            .call(move |conn| -> std::result::Result<usize, rusqlite::Error> {
+                // Delete all logs except the most recent `keep` entries
+                let count = conn.execute(
+                    "DELETE FROM logs WHERE id NOT IN (
+                        SELECT id FROM logs ORDER BY timestamp DESC LIMIT ?1
+                    )",
+                    rusqlite::params![keep],
+                )?;
+                Ok(count)
+            })
+            .await
+            .map_err(|e: tokio_rusqlite::Error| AgitError::Storage(e.to_string()))
+    }
 }
 
 use rusqlite::OptionalExtension;

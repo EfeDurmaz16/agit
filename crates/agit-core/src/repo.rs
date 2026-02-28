@@ -459,6 +459,22 @@ impl Repository {
         gc::gc(&*self.storage, &self.refs, keep_last_n).await
     }
 
+    /// Apply a retention policy: delete expired objects and prune logs.
+    pub async fn enforce_retention(
+        &self,
+        policy: &crate::retention::RetentionPolicy,
+    ) -> Result<crate::retention::RetentionResult> {
+        crate::retention::enforce_retention(&*self.storage, &self.refs, policy).await
+    }
+
+    /// Preview what a retention policy would delete without actually deleting.
+    pub async fn preview_retention(
+        &self,
+        policy: &crate::retention::RetentionPolicy,
+    ) -> Result<crate::retention::RetentionResult> {
+        crate::retention::preview_retention(&*self.storage, &self.refs, policy).await
+    }
+
     /// Squash a range of commits into a single commit.
     pub async fn squash(
         &mut self,

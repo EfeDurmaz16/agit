@@ -427,4 +427,32 @@ impl StorageBackend for PostgresStorage {
         }
         Ok(objects)
     }
+
+    async fn delete_logs_before(&self, before_timestamp: &str) -> Result<usize> {
+        let client = self.pool.get().await
+            .map_err(|e| AgitError::Storage(format!("pool error: {e}")))?;
+        let count = client
+            .execute(
+                "DELETE FROM logs WHERE timestamp < $1",
+                &[&before_timestamp],
+            )
+            .await
+            .map_err(|e| AgitError::Storage(e.to_string()))?;
+        Ok(count as usize)
+    }
+
+    async fn prune_logs_excess(&self, keep: usize) -> Result<usize> {
+        let client = self.pool.get().await
+            .map_err(|e| AgitError::Storage(format!("pool error: {e}")))?;
+        let count = client
+            .execute(
+                "DELETE FROM logs WHERE id NOT IN (
+                    SELECT id FROM logs ORDER BY timestamp DESC LIMIT $1
+                )",
+                &[&(keep as i64)],
+            )
+            .await
+            .map_err(|e| AgitError::Storage(e.to_string()))?;
+        Ok(count as usize)
+    }
 }

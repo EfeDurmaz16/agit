@@ -23,4 +23,5 @@ pub use state::{AgentState, DiffEntry, MergeConflict, MerkleNode, StateDiff, mer
 pub use storage::sqlite::SqliteStorage;
 pub use storage::{LogEntry, LogFilter, StorageBackend};
 pub use gc::{GcResult, SquashResult};
+pub use retention::{RetentionPolicy, RetentionResult, enforce_retention, preview_retention};
 pub use types::{ActionType, ChangeType, Hash, MergeStrategy, ObjectType};
