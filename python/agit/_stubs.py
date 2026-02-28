@@ -632,6 +632,218 @@ class PyRepository:
 
         return {"nodes": nodes, "edges": edges}
 
+    def get_retention_preview(self, policy_dict: dict[str, Any]) -> dict[str, Any]:
+        """Analyze objects/commits and return what would be deleted under policy."""
+        max_age_secs = policy_dict.get("max_age_secs")
+        max_commits = policy_dict.get("max_commits")
+        keep_branches = policy_dict.get("keep_branches", ["main"])
+        max_log_age_secs = policy_dict.get("max_log_age_secs")
+        max_log_entries = policy_dict.get("max_log_entries")
+
+        now = time.time()
+        all_commits = self.log(limit=10000)
+
+        # Determine which commits would be expired
+        commits_expired = 0
+        commits_retained = 0
+        for i, c in enumerate(all_commits):
+            expired = False
+            if max_age_secs is not None:
+                try:
+                    ts = time.mktime(time.strptime(c.timestamp, "%Y-%m-%dT%H:%M:%SZ"))
+                    if (now - ts) > max_age_secs:
+                        expired = True
+                except (ValueError, OverflowError):
+                    pass
+            if max_commits is not None and i >= max_commits:
+                expired = True
+            if expired:
+                commits_expired += 1
+            else:
+                commits_retained += 1
+
+        objects_before = len(self._objects)
+
+        # Estimate objects that would be deleted (2 per expired commit: tree + commit)
+        objects_deleted = commits_expired * 2
+
+        # Estimate log entries that would be pruned
+        logs_pruned = 0
+        with self._lock:
+            total_logs = len(self._audit)
+        if max_log_entries is not None and total_logs > max_log_entries:
+            logs_pruned = total_logs - max_log_entries
+        if max_log_age_secs is not None:
+            for entry in list(self._audit):
+                try:
+                    ts = time.mktime(time.strptime(entry["timestamp"], "%Y-%m-%dT%H:%M:%SZ"))
+                    if (now - ts) > max_log_age_secs:
+                        logs_pruned += 1
+                except (ValueError, OverflowError):
+                    pass
+
+        return {
+            "commits_expired": commits_expired,
+            "commits_retained": commits_retained,
+            "objects_deleted": objects_deleted,
+            "logs_pruned": logs_pruned,
+            "objects_before": objects_before,
+            "objects_after": max(0, objects_before - objects_deleted),
+        }
+
+    def enforce_retention(self, policy_dict: dict[str, Any]) -> dict[str, Any]:
+        """Actually delete expired objects and prune logs based on policy."""
+        max_age_secs = policy_dict.get("max_age_secs")
+        max_commits = policy_dict.get("max_commits")
+        keep_branches = policy_dict.get("keep_branches", ["main"])
+        max_log_age_secs = policy_dict.get("max_log_age_secs")
+        max_log_entries = policy_dict.get("max_log_entries")
+
+        now = time.time()
+        objects_before = len(self._objects)
+        all_commits = self.log(limit=10000)
+
+        # Find protected commit hashes (branch tips for kept branches)
+        protected_hashes: set[str] = set()
+        with self._lock:
+            for br in keep_branches:
+                if br in self._branches:
+                    protected_hashes.add(self._branches[br])
+
+        commits_expired = 0
+        commits_retained = 0
+        hashes_to_remove: set[str] = set()
+
+        for i, c in enumerate(all_commits):
+            if c.hash in protected_hashes:
+                commits_retained += 1
+                continue
+            expired = False
+            if max_age_secs is not None:
+                try:
+                    ts = time.mktime(time.strptime(c.timestamp, "%Y-%m-%dT%H:%M:%SZ"))
+                    if (now - ts) > max_age_secs:
+                        expired = True
+                except (ValueError, OverflowError):
+                    pass
+            if max_commits is not None and i >= max_commits:
+                expired = True
+            if expired:
+                commits_expired += 1
+                hashes_to_remove.add(c.hash)
+                if c.tree_hash:
+                    hashes_to_remove.add(c.tree_hash)
+            else:
+                commits_retained += 1
+
+        # Delete expired objects
+        objects_deleted = 0
+        for h in hashes_to_remove:
+            if h in self._objects:
+                with self._lock:
+                    self._objects.pop(h, None)
+                if self._db_path:
+                    con = sqlite3.connect(self._db_path)
+                    con.execute("DELETE FROM objects WHERE hash=?", (h,))
+                    con.commit()
+                    con.close()
+                objects_deleted += 1
+
+        # Prune logs
+        logs_pruned = 0
+        with self._lock:
+            original_logs = list(self._audit)
+
+        kept_logs = list(original_logs)
+        if max_log_age_secs is not None:
+            kept_logs_new = []
+            for entry in kept_logs:
+                try:
+                    ts = time.mktime(time.strptime(entry["timestamp"], "%Y-%m-%dT%H:%M:%SZ"))
+                    if (now - ts) <= max_log_age_secs:
+                        kept_logs_new.append(entry)
+                    else:
+                        logs_pruned += 1
+                except (ValueError, OverflowError):
+                    kept_logs_new.append(entry)
+            kept_logs = kept_logs_new
+
+        if max_log_entries is not None and len(kept_logs) > max_log_entries:
+            excess = len(kept_logs) - max_log_entries
+            logs_pruned += excess
+            kept_logs = kept_logs[-max_log_entries:]
+
+        with self._lock:
+            self._audit = kept_logs
+
+        objects_after = len(self._objects)
+        return {
+            "commits_expired": commits_expired,
+            "commits_retained": commits_retained,
+            "objects_deleted": objects_deleted,
+            "logs_pruned": logs_pruned,
+            "objects_before": objects_before,
+            "objects_after": objects_after,
+        }
+
+    def get_schema_version(self) -> int:
+        """Return current schema version from schema_version table."""
+        if self._db_path is None:
+            return 1
+        con = sqlite3.connect(self._db_path)
+        try:
+            row = con.execute("SELECT version FROM schema_version ORDER BY version DESC LIMIT 1").fetchone()
+            if row:
+                return int(row[0])
+            return 1
+        except sqlite3.OperationalError:
+            # Table does not exist yet; version 1 is baseline
+            return 1
+        finally:
+            con.close()
+
+    def apply_migrations(self) -> dict[str, Any]:
+        """Apply pending schema migrations. Returns migration result."""
+        current_version = self.get_schema_version()
+
+        if self._db_path is None:
+            return {"from_version": current_version, "to_version": current_version, "migrations_applied": 0}
+
+        con = sqlite3.connect(self._db_path)
+        try:
+            # Ensure schema_version table exists
+            con.execute(
+                "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY, applied_at TEXT)"
+            )
+            con.commit()
+
+            # Define available migrations (version -> DDL)
+            migrations: list[tuple[int, str]] = [
+                (2, "CREATE TABLE IF NOT EXISTS branches (name TEXT PRIMARY KEY, commit_hash TEXT, created_at TEXT)"),
+                (3, "CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit (ts)"),
+            ]
+
+            applied = 0
+            target_version = current_version
+            for version, ddl in migrations:
+                if version > current_version:
+                    con.execute(ddl)
+                    con.execute(
+                        "INSERT OR REPLACE INTO schema_version VALUES (?, ?)",
+                        (version, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())),
+                    )
+                    con.commit()
+                    target_version = version
+                    applied += 1
+
+            return {
+                "from_version": current_version,
+                "to_version": target_version,
+                "migrations_applied": applied,
+            }
+        finally:
+            con.close()
+
     # --- Internal ---
 
     def _append_audit(self, action: str, message: str, commit_hash: str | None) -> None:

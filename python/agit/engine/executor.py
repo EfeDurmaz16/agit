@@ -258,6 +258,44 @@ class ExecutionEngine:
             return self._repo.get_causal_graph(head_hash, depth)
         return {"nodes": [], "edges": []}
 
+    def preview_retention(self, policy: dict[str, Any]) -> dict[str, Any]:
+        """Preview what would be deleted under the given retention policy."""
+        if hasattr(self._repo, "get_retention_preview"):
+            return self._repo.get_retention_preview(policy)
+        return {
+            "commits_expired": 0,
+            "commits_retained": 0,
+            "objects_deleted": 0,
+            "logs_pruned": 0,
+            "objects_before": 0,
+            "objects_after": 0,
+        }
+
+    def enforce_retention(self, policy: dict[str, Any]) -> dict[str, Any]:
+        """Apply the retention policy, deleting expired objects and pruning logs."""
+        if hasattr(self._repo, "enforce_retention"):
+            return self._repo.enforce_retention(policy)
+        return {
+            "commits_expired": 0,
+            "commits_retained": 0,
+            "objects_deleted": 0,
+            "logs_pruned": 0,
+            "objects_before": 0,
+            "objects_after": 0,
+        }
+
+    def get_schema_version(self) -> int:
+        """Return the current schema version."""
+        if hasattr(self._repo, "get_schema_version"):
+            return self._repo.get_schema_version()
+        return 1
+
+    def apply_migrations(self) -> dict[str, Any]:
+        """Apply pending schema migrations."""
+        if hasattr(self._repo, "apply_migrations"):
+            return self._repo.apply_migrations()
+        return {"from_version": 1, "to_version": 1, "migrations_applied": 0}
+
     # ------------------------------------------------------------------
     # Internal conversion helpers
     # ------------------------------------------------------------------

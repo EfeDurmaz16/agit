@@ -74,6 +74,43 @@ const navItems = [
       </svg>
     ),
   },
+  {
+    href: "/dashboard/events",
+    label: "Events",
+    icon: (
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+        <path d="M8 1.5L5 7.5H9L6 12.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    ),
+  },
+  {
+    href: "/dashboard/debugger",
+    label: "Debugger",
+    icon: (
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+        <circle cx="7" cy="5.5" r="2.5" stroke="currentColor" strokeWidth="1.4" />
+        <path d="M4.5 3C3.5 3 2 3.5 2 5.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+        <path d="M9.5 3C10.5 3 12 3.5 12 5.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+        <path d="M7 8v4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+        <path d="M5 9.5H2.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+        <path d="M9 9.5h2.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+        <path d="M5 12H3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+        <path d="M9 12h2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+      </svg>
+    ),
+  },
+  {
+    href: "/dashboard/retention",
+    label: "Retention",
+    icon: (
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+        <path d="M2.5 4h9M5 4V2.5h4V4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M3 4l.5 8h7l.5-8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+        <line x1="5.5" y1="6.5" x2="5.5" y2="10" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+        <line x1="8.5" y1="6.5" x2="8.5" y2="10" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+      </svg>
+    ),
+  },
 ];
 
 const agents = [

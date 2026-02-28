@@ -32,8 +32,12 @@ from .models import (
     HealthResponse,
     MergeRequest,
     MergeResponse,
+    MigrationResult,
+    RetentionPolicy,
+    RetentionResult,
     RevertRequest,
     RevertResponse,
+    SchemaVersionResponse,
     SearchResponse,
 )
 
@@ -351,6 +355,56 @@ async def search(
             if len(results) >= limit:
                 break
     return SearchResponse(results=results, count=len(results))
+
+
+# ---------------------------------------------------------------------------
+# Retention Policy
+# ---------------------------------------------------------------------------
+
+@router.post("/retention/preview", response_model=RetentionResult)
+async def retention_preview(
+    req: RetentionPolicy,
+    tenant_info: dict[str, str] = Depends(require_permission(Permission.READ)),
+) -> RetentionResult:
+    """Preview what would be deleted under the given retention policy."""
+    engine = _get_engine(tenant_info)
+    result = engine.preview_retention(req.model_dump())
+    return RetentionResult(**result)
+
+
+@router.post("/retention/enforce", response_model=RetentionResult)
+async def retention_enforce(
+    req: RetentionPolicy,
+    tenant_info: dict[str, str] = Depends(require_permission(Permission.WRITE)),
+) -> RetentionResult:
+    """Enforce the retention policy, deleting expired objects and pruning logs."""
+    engine = _get_engine(tenant_info)
+    result = engine.enforce_retention(req.model_dump())
+    return RetentionResult(**result)
+
+
+# ---------------------------------------------------------------------------
+# Schema Versioning / Migrations
+# ---------------------------------------------------------------------------
+
+@router.get("/schema/version", response_model=SchemaVersionResponse)
+async def schema_version(
+    tenant_info: dict[str, str] = Depends(require_permission(Permission.READ)),
+) -> SchemaVersionResponse:
+    """Return the current schema version."""
+    engine = _get_engine(tenant_info)
+    version = engine.get_schema_version()
+    return SchemaVersionResponse(version=version)
+
+
+@router.post("/schema/migrate", response_model=MigrationResult)
+async def schema_migrate(
+    tenant_info: dict[str, str] = Depends(require_permission(Permission.WRITE)),
+) -> MigrationResult:
+    """Apply pending schema migrations."""
+    engine = _get_engine(tenant_info)
+    result = engine.apply_migrations()
+    return MigrationResult(**result)
 
 
 # ---------------------------------------------------------------------------

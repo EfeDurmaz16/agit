@@ -448,6 +448,111 @@ def causal_graph_cmd(
         _abort(str(exc))
 
 
+@app.command(name="retention-preview")
+def retention_preview(
+    max_commits: Annotated[Optional[int], typer.Option("--max-commits", help="Max commits to keep")] = None,
+    max_age: Annotated[Optional[int], typer.Option("--max-age", help="Max age in seconds")] = None,
+    max_log_entries: Annotated[Optional[int], typer.Option("--max-log-entries", help="Max audit log entries to keep")] = None,
+    repo: Annotated[str, typer.Option("--repo", "-r")] = _DEFAULT_REPO,
+    agent: Annotated[str, typer.Option("--agent", "-a")] = _DEFAULT_AGENT,
+) -> None:
+    """Show what would be deleted under the given retention policy (dry run)."""
+    try:
+        eng = _engine(repo, agent)
+        policy: dict = {}
+        if max_commits is not None:
+            policy["max_commits"] = max_commits
+        if max_age is not None:
+            policy["max_age_secs"] = max_age
+        if max_log_entries is not None:
+            policy["max_log_entries"] = max_log_entries
+        result = eng.preview_retention(policy)
+        table = Table(title="Retention Preview (dry run)", show_header=True)
+        table.add_column("Metric", style="bold cyan")
+        table.add_column("Value")
+        table.add_row("Commits expired", str(result.get("commits_expired", 0)))
+        table.add_row("Commits retained", str(result.get("commits_retained", 0)))
+        table.add_row("Objects deleted", str(result.get("objects_deleted", 0)))
+        table.add_row("Logs pruned", str(result.get("logs_pruned", 0)))
+        table.add_row("Objects before", str(result.get("objects_before", 0)))
+        table.add_row("Objects after", str(result.get("objects_after", 0)))
+        console.print(table)
+    except Exception as exc:
+        _abort(str(exc))
+
+
+@app.command(name="retention-enforce")
+def retention_enforce(
+    max_commits: Annotated[Optional[int], typer.Option("--max-commits", help="Max commits to keep")] = None,
+    max_age: Annotated[Optional[int], typer.Option("--max-age", help="Max age in seconds")] = None,
+    max_log_entries: Annotated[Optional[int], typer.Option("--max-log-entries", help="Max audit log entries to keep")] = None,
+    repo: Annotated[str, typer.Option("--repo", "-r")] = _DEFAULT_REPO,
+    agent: Annotated[str, typer.Option("--agent", "-a")] = _DEFAULT_AGENT,
+) -> None:
+    """Enforce the retention policy, deleting expired objects and pruning logs."""
+    try:
+        eng = _engine(repo, agent)
+        policy: dict = {}
+        if max_commits is not None:
+            policy["max_commits"] = max_commits
+        if max_age is not None:
+            policy["max_age_secs"] = max_age
+        if max_log_entries is not None:
+            policy["max_log_entries"] = max_log_entries
+        result = eng.enforce_retention(policy)
+        _success(
+            f"Retention enforced: {result.get('commits_expired', 0)} commits expired, "
+            f"{result.get('objects_deleted', 0)} objects deleted, "
+            f"{result.get('logs_pruned', 0)} log entries pruned"
+        )
+        table = Table(title="Retention Result", show_header=True)
+        table.add_column("Metric", style="bold cyan")
+        table.add_column("Value")
+        table.add_row("Commits expired", str(result.get("commits_expired", 0)))
+        table.add_row("Commits retained", str(result.get("commits_retained", 0)))
+        table.add_row("Objects deleted", str(result.get("objects_deleted", 0)))
+        table.add_row("Logs pruned", str(result.get("logs_pruned", 0)))
+        table.add_row("Objects before", str(result.get("objects_before", 0)))
+        table.add_row("Objects after", str(result.get("objects_after", 0)))
+        console.print(table)
+    except Exception as exc:
+        _abort(str(exc))
+
+
+@app.command(name="schema-version")
+def schema_version(
+    repo: Annotated[str, typer.Option("--repo", "-r")] = _DEFAULT_REPO,
+    agent: Annotated[str, typer.Option("--agent", "-a")] = _DEFAULT_AGENT,
+) -> None:
+    """Print the current schema version."""
+    try:
+        eng = _engine(repo, agent)
+        version = eng.get_schema_version()
+        console.print(f"[bold cyan]Schema version:[/] {version}")
+    except Exception as exc:
+        _abort(str(exc))
+
+
+@app.command(name="schema-migrate")
+def schema_migrate(
+    repo: Annotated[str, typer.Option("--repo", "-r")] = _DEFAULT_REPO,
+    agent: Annotated[str, typer.Option("--agent", "-a")] = _DEFAULT_AGENT,
+) -> None:
+    """Apply pending schema migrations."""
+    try:
+        eng = _engine(repo, agent)
+        result = eng.apply_migrations()
+        from_v = result.get("from_version", 0)
+        to_v = result.get("to_version", 0)
+        applied = result.get("migrations_applied", 0)
+        if applied == 0:
+            console.print(f"[dim]Already at latest schema version ({to_v}). No migrations applied.[/]")
+        else:
+            _success(f"Applied {applied} migration(s): v{from_v} -> v{to_v}")
+    except Exception as exc:
+        _abort(str(exc))
+
+
 @app.command()
 def squash(
     branch_name: Annotated[str, typer.Argument(help="Branch to squash")],

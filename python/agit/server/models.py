@@ -181,3 +181,32 @@ class CausalGraphResponse(BaseModel):
     ok: bool = True
     nodes: list[CausalNode] = []
     edges: list[CausalEdgeModel] = []
+
+
+class RetentionPolicy(BaseModel):
+    max_age_secs: int | None = None
+    max_commits: int | None = None
+    keep_branches: list[str] = Field(default_factory=lambda: ["main"])
+    max_log_age_secs: int | None = None
+    max_log_entries: int | None = None
+    auto_squash: bool = False
+    squash_threshold: int | None = None
+
+
+class RetentionResult(BaseModel):
+    commits_expired: int
+    commits_retained: int
+    objects_deleted: int
+    logs_pruned: int
+    objects_before: int
+    objects_after: int
+
+
+class MigrationResult(BaseModel):
+    from_version: int
+    to_version: int
+    migrations_applied: int
+
+
+class SchemaVersionResponse(BaseModel):
+    version: int
