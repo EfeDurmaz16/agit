@@ -34,3 +34,35 @@ export function formatTimestamp(timestamp: string): string {
     second: "2-digit",
   });
 }
+
+export function actionTypeColor(actionType: string): string {
+  switch (actionType) {
+    case "tool_call": return "#5B8DEF";
+    case "llm_response": return "#4ADE80";
+    case "rollback": return "#E85D5D";
+    case "checkpoint": return "#E8A44A";
+    case "user_input": return "#6E6E76";
+    default: return "#6E6E76";
+  }
+}
+
+export function levelColor(level: string): string {
+  switch (level) {
+    case "info": return "#6E6E76";
+    case "warning": return "#E8A44A";
+    case "error": return "#E85D5D";
+    default: return "#6E6E76";
+  }
+}
+
+export function downloadAsJson(data: unknown, filename: string) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
