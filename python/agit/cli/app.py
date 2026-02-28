@@ -374,6 +374,81 @@ def gc(
 
 
 @app.command()
+def bisect(
+    good: Annotated[str, typer.Argument(help="Known good commit hash")],
+    bad: Annotated[str, typer.Argument(help="Known bad commit hash")],
+    repo: Annotated[str, typer.Option("--repo", "-r")] = _DEFAULT_REPO,
+    agent: Annotated[str, typer.Option("--agent", "-a")] = _DEFAULT_AGENT,
+) -> None:
+    """Start a bisect session to find where behavior diverged."""
+    try:
+        eng = _engine(repo, agent)
+        session = eng.bisect_start(good, bad)
+        candidates = session.get("candidates", [])
+        current_idx = session.get("current_idx", 0)
+        console.print(f"[bold]Bisect started[/]: {len(candidates)} commits to search")
+        if candidates:
+            current = candidates[current_idx]
+            console.print(f"[yellow]Test commit:[/] {current[:12]}")
+            console.print("[dim]Use 'agit bisect-step --mark good' or 'agit bisect-step --mark bad'[/]")
+    except Exception as exc:
+        _abort(str(exc))
+
+
+@app.command(name="bisect-step")
+def bisect_step_cmd(
+    mark: Annotated[str, typer.Option("--mark", "-m", help="Mark as 'good' or 'bad'")],
+    repo: Annotated[str, typer.Option("--repo", "-r")] = _DEFAULT_REPO,
+    agent: Annotated[str, typer.Option("--agent", "-a")] = _DEFAULT_AGENT,
+) -> None:
+    """Step through bisect: mark current commit as good or bad."""
+    try:
+        eng = _engine(repo, agent)
+        session = eng.bisect_step(mark)
+        status = session.get("status", "in_progress")
+        if status == "completed":
+            result = session.get("result", {})
+            first_bad = result.get("first_bad", "unknown")
+            steps = result.get("total_steps", 0)
+            _success(f"Bisect complete! First bad commit: [bold red]{first_bad[:12]}[/] (found in {steps} steps)")
+        else:
+            candidates = session.get("candidates", [])
+            current_idx = session.get("current_idx", 0)
+            console.print(f"[dim]{len(candidates)} candidates remaining[/]")
+            if candidates:
+                console.print(f"[yellow]Test commit:[/] {candidates[current_idx][:12]}")
+    except Exception as exc:
+        _abort(str(exc))
+
+
+@app.command(name="causal-graph")
+def causal_graph_cmd(
+    depth: Annotated[int, typer.Option("--depth", "-d")] = 50,
+    json_output: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
+    repo: Annotated[str, typer.Option("--repo", "-r")] = _DEFAULT_REPO,
+    agent: Annotated[str, typer.Option("--agent", "-a")] = _DEFAULT_AGENT,
+) -> None:
+    """Show causal dependency graph of commits."""
+    try:
+        eng = _engine(repo, agent)
+        graph = eng.get_causal_graph(depth=depth)
+        if json_output:
+            console.print(json.dumps(graph, indent=2))
+            return
+        nodes = graph.get("nodes", [])
+        edges = graph.get("edges", [])
+        console.print(f"[bold]Causal Graph[/]: {len(nodes)} nodes, {len(edges)} edges")
+        for node in nodes[:20]:
+            indent = "  " * node.get("depth", 0)
+            h = node.get("hash", "")[:12]
+            msg = node.get("message", "")
+            at = node.get("action_type", "")
+            console.print(f"{indent}[yellow]{h}[/] [{at}] {msg}")
+    except Exception as exc:
+        _abort(str(exc))
+
+
+@app.command()
 def squash(
     branch_name: Annotated[str, typer.Argument(help="Branch to squash")],
     from_hash: Annotated[str, typer.Argument(help="Start of range (oldest commit)")],

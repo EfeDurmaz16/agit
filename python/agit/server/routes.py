@@ -1,12 +1,14 @@
 """REST API routes for agit operations."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import StreamingResponse
 
 from agit.engine.executor import ExecutionEngine
 
@@ -93,6 +95,13 @@ async def create_commit(
     """Commit agent state."""
     engine = _get_engine(tenant_info)
     h = engine.commit_state(req.state, req.message, req.action_type)
+    # Emit event
+    from .event_bus import get_event_bus, AgitEvent
+    bus = get_event_bus()
+    await bus.publish(AgitEvent(
+        event_type="commit_created",
+        data={"hash": h, "message": req.message, "action_type": req.action_type},
+    ))
     return CommitResponse(hash=h, message=req.message)
 
 
@@ -175,6 +184,13 @@ async def create_branch(
     engine = _get_engine(tenant_info)
     engine.branch(req.name, from_ref=req.from_ref)
     branches = engine.list_branches()
+    # Emit event
+    from .event_bus import get_event_bus, AgitEvent
+    bus = get_event_bus()
+    await bus.publish(AgitEvent(
+        event_type="branch_created",
+        data={"name": req.name, "from_ref": req.from_ref or "HEAD"},
+    ))
     return BranchResponse(name=req.name, hash=branches.get(req.name, ""))
 
 
@@ -209,6 +225,13 @@ async def merge(
     """Merge a branch into HEAD."""
     engine = _get_engine(tenant_info)
     h = engine.merge(req.branch, strategy=req.strategy)
+    # Emit event
+    from .event_bus import get_event_bus, AgitEvent
+    bus = get_event_bus()
+    await bus.publish(AgitEvent(
+        event_type="merge_completed",
+        data={"merge_hash": h, "branch": req.branch, "strategy": req.strategy},
+    ))
     return MergeResponse(merge_commit=h)
 
 
@@ -220,6 +243,13 @@ async def revert(
     """Revert to a previous commit."""
     engine = _get_engine(tenant_info)
     state = engine.revert(req.commit_hash)
+    # Emit event
+    from .event_bus import get_event_bus, AgitEvent
+    bus = get_event_bus()
+    await bus.publish(AgitEvent(
+        event_type="revert_performed",
+        data={"commit_hash": req.commit_hash},
+    ))
     return RevertResponse(reverted_to=req.commit_hash, state=state)
 
 
@@ -243,6 +273,51 @@ async def audit_log(
         for e in logs
     ]
     return AuditResponse(entries=entries, count=len(entries))
+
+
+@router.post("/bisect/start")
+async def bisect_start(
+    good_hash: str = Query(description="Known good commit"),
+    bad_hash: str = Query(description="Known bad commit"),
+    tenant_info: dict[str, str] = Depends(require_permission(Permission.WRITE)),
+):
+    """Start a bisect session."""
+    engine = _get_engine(tenant_info)
+    result = engine.bisect_start(good_hash, bad_hash)
+    return {"ok": True, **result}
+
+
+@router.post("/bisect/step")
+async def bisect_step(
+    mark: str = Query(description="Mark current as 'good' or 'bad'", pattern="^(good|bad)$"),
+    tenant_info: dict[str, str] = Depends(require_permission(Permission.WRITE)),
+):
+    """Step through bisect session."""
+    engine = _get_engine(tenant_info)
+    result = engine.bisect_step(mark)
+    return {"ok": True, **result}
+
+
+@router.post("/bisect/reset")
+async def bisect_reset(
+    tenant_info: dict[str, str] = Depends(require_permission(Permission.WRITE)),
+):
+    """Reset bisect session."""
+    engine = _get_engine(tenant_info)
+    engine.bisect_reset()
+    return {"ok": True}
+
+
+@router.get("/causal")
+async def get_causal_graph(
+    head_hash: str | None = Query(default=None, description="Start from this commit"),
+    depth: int = Query(default=50, le=200, description="Max depth to traverse"),
+    tenant_info: dict[str, str] = Depends(require_permission(Permission.READ)),
+):
+    """Get causal dependency graph."""
+    engine = _get_engine(tenant_info)
+    graph = engine.get_causal_graph(head_hash, depth)
+    return {"ok": True, **graph}
 
 
 @router.get("/search", response_model=SearchResponse)
@@ -276,3 +351,96 @@ async def search(
             if len(results) >= limit:
                 break
     return SearchResponse(results=results, count=len(results))
+
+
+# ---------------------------------------------------------------------------
+# Event Streaming (SSE + WebSocket)
+# ---------------------------------------------------------------------------
+
+@router.get("/events/stream")
+async def event_stream(
+    last_event_id: str | None = Query(default=None, alias="Last-Event-ID"),
+    tenant_info: dict[str, str] = Depends(require_permission(Permission.READ)),
+):
+    """Server-Sent Events stream for real-time updates."""
+    from .event_bus import get_event_bus
+
+    bus = get_event_bus()
+    queue = await bus.subscribe()
+
+    async def generate():
+        try:
+            # Send initial connection event
+            yield f"event: connected\ndata: {{\"subscriber_count\": {bus.subscriber_count}}}\n\n"
+
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=30.0)
+                    import json as _json
+                    data = _json.dumps({
+                        "event_type": event.event_type,
+                        "data": event.data,
+                        "timestamp": event.timestamp,
+                        "event_id": event.event_id,
+                    })
+                    yield f"id: {event.event_id}\nevent: {event.event_type}\ndata: {data}\n\n"
+                except asyncio.TimeoutError:
+                    # Send keepalive
+                    yield ": keepalive\n\n"
+        except asyncio.CancelledError:
+            pass
+        finally:
+            await bus.unsubscribe(queue)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.get("/events/history")
+async def event_history(
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, le=500),
+    tenant_info: dict[str, str] = Depends(require_permission(Permission.READ)),
+):
+    """Get historical events."""
+    from .event_bus import get_event_bus
+
+    bus = get_event_bus()
+    events = await bus.events_since(offset)
+    limited = events[:limit]
+    return {
+        "ok": True,
+        "events": [
+            {
+                "event_type": e.event_type,
+                "data": e.data,
+                "timestamp": e.timestamp,
+                "event_id": e.event_id,
+            }
+            for e in limited
+        ],
+        "total": bus.event_count,
+        "offset": offset,
+    }
+
+
+@router.get("/events/status")
+async def event_status(
+    tenant_info: dict[str, str] = Depends(require_permission(Permission.READ)),
+):
+    """Get event bus status."""
+    from .event_bus import get_event_bus
+
+    bus = get_event_bus()
+    return {
+        "ok": True,
+        "subscribers": bus.subscriber_count,
+        "total_events": bus.event_count,
+    }

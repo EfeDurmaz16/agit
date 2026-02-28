@@ -8,6 +8,8 @@
 
 import type {
   AgentState,
+  AgitEvent,
+  AgitEventHandler,
   BranchOptions,
   Commit,
   CommitOptions,
@@ -608,5 +610,125 @@ export class AgitClient {
       current_branch: this.repo.currentBranch(),
       branches: this.repo.listBranches(),
     };
+  }
+
+  /**
+   * Fetch recent event history from the agit server.
+   *
+   * @param offset - Number of events to skip (default 0).
+   * @param limit  - Maximum number of events to return (default 50).
+   */
+  async getEventHistory(offset = 0, limit = 50): Promise<AgitEvent[]> {
+    const url = `http://localhost:8000/api/v1/events/history?offset=${offset}&limit=${limit}`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      throw new Error(`getEventHistory failed: ${res.status} ${res.statusText}`);
+    }
+    return res.json() as Promise<AgitEvent[]>;
+  }
+}
+
+/**
+ * SSE event stream client for real-time agit events.
+ * Connects to /api/v1/events/stream and emits typed events.
+ */
+export class AgitEventStream {
+  private eventSource: EventSource | null = null;
+  private handlers: Map<string, AgitEventHandler[]> = new Map();
+  private allHandlers: AgitEventHandler[] = [];
+  private reconnectDelay = 1000;
+  private maxReconnectDelay = 30000;
+  private url: string;
+  private apiKey?: string;
+
+  constructor(baseUrl?: string, apiKey?: string) {
+    this.url = `${baseUrl || 'http://localhost:8000/api/v1'}/events/stream`;
+    this.apiKey = apiKey;
+  }
+
+  /** Connect to the SSE stream. */
+  connect(): void {
+    if (this.eventSource) {
+      this.eventSource.close();
+    }
+
+    const url = this.apiKey ? `${this.url}?api_key=${this.apiKey}` : this.url;
+    this.eventSource = new EventSource(url);
+
+    this.eventSource.onopen = () => {
+      this.reconnectDelay = 1000; // Reset on successful connection
+    };
+
+    this.eventSource.onerror = () => {
+      this.eventSource?.close();
+      this.eventSource = null;
+      // Reconnect with exponential backoff
+      setTimeout(() => this.connect(), this.reconnectDelay);
+      this.reconnectDelay = Math.min(this.reconnectDelay * 2, this.maxReconnectDelay);
+    };
+
+    // Listen for all event types
+    const eventTypes = [
+      'commit_created', 'branch_created', 'branch_deleted',
+      'merge_completed', 'revert_performed', 'checkout_performed',
+      'gc_completed', 'retention_applied', 'connected',
+    ];
+
+    for (const type of eventTypes) {
+      this.eventSource.addEventListener(type, (e: Event) => {
+        try {
+          const event: AgitEvent = JSON.parse((e as MessageEvent).data);
+          this.dispatch(event);
+        } catch {
+          // Ignore parse errors
+        }
+      });
+    }
+  }
+
+  /** Disconnect from the SSE stream. */
+  disconnect(): void {
+    if (this.eventSource) {
+      this.eventSource.close();
+      this.eventSource = null;
+    }
+  }
+
+  /** Listen for a specific event type. */
+  on(eventType: string, handler: AgitEventHandler): () => void {
+    if (!this.handlers.has(eventType)) {
+      this.handlers.set(eventType, []);
+    }
+    this.handlers.get(eventType)!.push(handler);
+    // Return unsubscribe function
+    return () => {
+      const list = this.handlers.get(eventType);
+      if (list) {
+        const idx = list.indexOf(handler);
+        if (idx >= 0) list.splice(idx, 1);
+      }
+    };
+  }
+
+  /** Listen for all events. */
+  onAny(handler: AgitEventHandler): () => void {
+    this.allHandlers.push(handler);
+    return () => {
+      const idx = this.allHandlers.indexOf(handler);
+      if (idx >= 0) this.allHandlers.splice(idx, 1);
+    };
+  }
+
+  /** Check if connected. */
+  get connected(): boolean {
+    return this.eventSource?.readyState === EventSource.OPEN;
+  }
+
+  private dispatch(event: AgitEvent): void {
+    // Type-specific handlers
+    const handlers = this.handlers.get(event.event_type) || [];
+    for (const h of handlers) h(event);
+    // All-event handlers
+    for (const h of this.allHandlers) h(event);
   }
 }

@@ -16,7 +16,7 @@ impl SqliteStorage {
     /// Used by the migration framework for schema upgrades.
     pub async fn run_migration<F, T>(&self, f: F) -> Result<T>
     where
-        F: FnOnce(&rusqlite::Connection) -> std::result::Result<T, rusqlite::Error> + Send + 'static,
+        F: FnOnce(&mut rusqlite::Connection) -> std::result::Result<T, rusqlite::Error> + Send + 'static,
         T: Send + 'static,
     {
         self.conn
@@ -429,7 +429,7 @@ mod tests {
         let storage = SqliteStorage::new(":memory:").await.unwrap();
         let mode: String = storage
             .conn
-            .call(|conn| {
+            .call(|conn| -> std::result::Result<String, rusqlite::Error> {
                 let mut stmt = conn.prepare("PRAGMA journal_mode")?;
                 let mode: String = stmt.query_row([], |row| row.get(0))?;
                 Ok(mode)

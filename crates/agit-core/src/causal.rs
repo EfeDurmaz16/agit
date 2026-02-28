@@ -6,6 +6,7 @@ use std::collections::HashMap;
 
 use petgraph::algo::astar;
 use petgraph::graph::{DiGraph, NodeIndex};
+use petgraph::visit::EdgeRef;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AgitError, Result};
@@ -162,19 +163,17 @@ impl CausalGraph {
                     let parent_idx = graph.ensure_node(parent_hash_str.clone(), parent_node);
 
                     // Compute changed paths via merkle diff.
-                    let changed_paths = if let Ok(parent_blob) =
-                        Self::load_blob_value(storage, pc.tree_hash.as_str()).await
-                    {
-                        if let Some(cb) = &current_blob.as_ref().ok().and_then(|v| v.clone()) {
-                            merkle_diff(&parent_blob, cb)
+                    let changed_paths = match (
+                        Self::load_blob_value(storage, pc.tree_hash.as_str()).await,
+                        current_blob.as_ref().ok().and_then(|v| v.as_ref()),
+                    ) {
+                        (Ok(Some(parent_blob)), Some(curr_blob)) => {
+                            merkle_diff(&parent_blob, curr_blob)
                                 .into_iter()
                                 .map(|e| e.path.join("."))
                                 .collect()
-                        } else {
-                            vec![]
                         }
-                    } else {
-                        vec![]
+                        _ => vec![],
                     };
 
                     // Determine relationship.
@@ -308,8 +307,6 @@ impl CausalGraph {
     /// consumption.  Each element contains a node and the list of outgoing
     /// causal edges.
     pub fn to_adjacency_list(&self) -> Vec<(CausalNode, Vec<CausalEdge>)> {
-        use petgraph::graph::NodeIndex;
-
         let mut result = Vec::new();
 
         for node_idx in self.graph.node_indices() {

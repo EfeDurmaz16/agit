@@ -235,6 +235,29 @@ class ExecutionEngine:
         # Native module doesn't expose audit_log directly; return empty list
         return []
 
+    def bisect_start(self, good_hash: str, bad_hash: str) -> dict[str, Any]:
+        """Start a bisect session to find where behavior diverged."""
+        if hasattr(self._repo, 'bisect_start'):
+            return self._repo.bisect_start(good_hash, bad_hash)
+        raise NotImplementedError("Bisect not available on this backend")
+
+    def bisect_step(self, mark: str) -> dict[str, Any]:
+        """Step through bisect: mark current as 'good' or 'bad'."""
+        if hasattr(self._repo, 'bisect_step'):
+            return self._repo.bisect_step(mark)
+        raise NotImplementedError("Bisect not available on this backend")
+
+    def bisect_reset(self) -> None:
+        """Reset the bisect session."""
+        if hasattr(self._repo, 'bisect_reset'):
+            self._repo.bisect_reset()
+
+    def get_causal_graph(self, head_hash: str | None = None, depth: int = 50) -> dict[str, Any]:
+        """Get causal dependency graph."""
+        if hasattr(self._repo, 'get_causal_graph'):
+            return self._repo.get_causal_graph(head_hash, depth)
+        return {"nodes": [], "edges": []}
+
     # ------------------------------------------------------------------
     # Internal conversion helpers
     # ------------------------------------------------------------------

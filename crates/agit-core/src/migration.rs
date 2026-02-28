@@ -153,11 +153,9 @@ where
 /// Apply schema migrations to a SQLite storage backend.
 /// This runs inside the sqlite connection and applies any pending migrations.
 pub async fn apply_schema_migrations(storage: &crate::storage::sqlite::SqliteStorage) -> Result<MigrationApplyResult> {
-    use tokio_rusqlite::Connection;
-
     let all_migrations = migrations();
 
-    storage.run_migration(|conn| {
+    storage.run_migration(move |conn| {
         // Check current version
         let has_version_table: bool = conn
             .query_row(

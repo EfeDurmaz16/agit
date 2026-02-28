@@ -140,3 +140,44 @@ class HealthResponse(BaseModel):
 class ErrorResponse(BaseModel):
     ok: bool = False
     error: str
+
+
+class BisectStartResponse(BaseModel):
+    ok: bool = True
+    good: str
+    bad: str
+    candidates: list[str] = []
+    current_idx: int = 0
+    steps: int = 0
+    status: str = "in_progress"
+
+
+class BisectStepResponse(BaseModel):
+    ok: bool = True
+    candidates: list[str] = []
+    current_idx: int = 0
+    steps: int = 0
+    status: str = "in_progress"
+    result: dict[str, Any] | None = None
+
+
+class CausalNode(BaseModel):
+    hash: str
+    message: str = ""
+    author: str = ""
+    action_type: str = ""
+    timestamp: str = ""
+    depth: int = 0
+
+
+class CausalEdgeModel(BaseModel):
+    cause: str
+    effect: str
+    relationship: str = "direct_parent"
+    changed_paths: list[str] = []
+
+
+class CausalGraphResponse(BaseModel):
+    ok: bool = True
+    nodes: list[CausalNode] = []
+    edges: list[CausalEdgeModel] = []

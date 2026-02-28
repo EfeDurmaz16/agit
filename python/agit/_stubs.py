@@ -223,6 +223,16 @@ class PyRepository:
         self._put(tree_hash, state_bytes)
 
         parent = self._resolve("HEAD") or ""
+
+        # Optimistic concurrency control: verify expected parent
+        if hasattr(self, '_expected_parent') and self._expected_parent is not None:
+            if parent != self._expected_parent:
+                raise ValueError(
+                    f"Concurrency conflict: expected parent {self._expected_parent[:12]} "
+                    f"but HEAD is at {parent[:12]}. Another agent may have committed."
+                )
+            self._expected_parent = None
+
         commit_obj: dict[str, Any] = {
             "tree_hash": tree_hash,
             "parent_hashes": [parent] if parent else [],
@@ -377,6 +387,28 @@ class PyRepository:
             self._branches.pop(name, None)
             self._refs.pop(name, None)
 
+    def set_expected_parent(self, parent_hash: str | None) -> None:
+        """Set expected parent for next commit (optimistic concurrency control).
+        If the actual HEAD doesn't match when committing, a ValueError is raised."""
+        self._expected_parent = parent_hash
+
+    def compare_and_swap_ref(self, name: str, expected: str, new_value: str) -> bool:
+        """Atomically update a ref only if it currently points to `expected`.
+        Returns True if the swap succeeded, False if the ref was changed by another writer."""
+        with self._lock:
+            current = self._branches.get(name) or self._refs.get(name)
+            if current != expected:
+                return False
+            self._refs[name] = new_value
+            if name != "HEAD":
+                self._branches[name] = new_value
+        if self._db_path:
+            con = sqlite3.connect(self._db_path)
+            con.execute("INSERT OR REPLACE INTO refs VALUES (?,?)", (name, new_value))
+            con.commit()
+            con.close()
+        return True
+
     def set_encryption_key(self, key: str) -> None:
         """Enable field-level encryption using Fernet (AES-128-CBC + HMAC-SHA256)."""
         import base64
@@ -478,6 +510,127 @@ class PyRepository:
                 self.objects_after = before - removed
 
         return _GcResult(objects_before, len(unreachable))
+
+    def bisect_start(self, good_hash: str, bad_hash: str) -> dict[str, Any]:
+        """Start a bisect session. Returns session state."""
+        # Collect commits between good and bad
+        commits = []
+        visited = set()
+        queue = [bad_hash]
+        while queue:
+            h = queue.pop(0)
+            if h in visited or not h:
+                continue
+            visited.add(h)
+            data = self._get(h)
+            if data is None:
+                continue
+            obj = json.loads(data)
+            commits.append({"hash": h, "timestamp": obj.get("timestamp", "")})
+            if h == good_hash:
+                break
+            queue.extend(obj.get("parent_hashes", []))
+
+        commits.sort(key=lambda c: c["timestamp"])
+        hashes = [c["hash"] for c in commits]
+        mid = len(hashes) // 2
+
+        self._bisect_session = {
+            "good": good_hash,
+            "bad": bad_hash,
+            "candidates": hashes,
+            "current_idx": mid,
+            "steps": 0,
+            "status": "in_progress",
+        }
+        return self._bisect_session
+
+    def bisect_step(self, mark: str) -> dict[str, Any]:
+        """Mark current commit as 'good' or 'bad', narrow search."""
+        if not hasattr(self, '_bisect_session') or self._bisect_session is None:
+            raise ValueError("No bisect session active")
+
+        session = self._bisect_session
+        candidates = session["candidates"]
+        idx = session["current_idx"]
+        session["steps"] += 1
+
+        if mark == "good":
+            # First bad is after this point
+            candidates = candidates[idx + 1:]
+        elif mark == "bad":
+            # First bad is at or before this point
+            candidates = candidates[:idx + 1]
+        else:
+            raise ValueError(f"Invalid mark: {mark}, expected 'good' or 'bad'")
+
+        session["candidates"] = candidates
+
+        if len(candidates) <= 1:
+            session["status"] = "completed"
+            session["result"] = {
+                "first_bad": candidates[0] if candidates else session["bad"],
+                "total_steps": session["steps"],
+                "commits_searched": len(candidates),
+            }
+        else:
+            session["current_idx"] = len(candidates) // 2
+
+        return session
+
+    def bisect_reset(self) -> None:
+        """Reset bisect session."""
+        self._bisect_session = None
+
+    def get_causal_graph(self, head_hash: str | None = None, depth: int = 50) -> dict[str, Any]:
+        """Build a causal dependency graph from commit history."""
+        start = head_hash or (self._resolve("HEAD") or "")
+        if not start:
+            return {"nodes": [], "edges": []}
+
+        nodes = []
+        edges = []
+        visited = set()
+        queue = [start]
+        count = 0
+
+        while queue and count < depth:
+            h = queue.pop(0)
+            if h in visited or not h:
+                continue
+            visited.add(h)
+            count += 1
+
+            data = self._get(h)
+            if data is None:
+                continue
+            obj = json.loads(data)
+
+            nodes.append({
+                "hash": h,
+                "message": obj.get("message", ""),
+                "author": obj.get("author", ""),
+                "action_type": obj.get("action_type", ""),
+                "timestamp": obj.get("timestamp", ""),
+                "depth": count - 1,
+            })
+
+            for parent in obj.get("parent_hashes", []):
+                relationship = "direct_parent"
+                if obj.get("action_type") == "merge":
+                    relationship = "branch_merge"
+                elif obj.get("action_type") == "rollback":
+                    relationship = "rollback"
+
+                edges.append({
+                    "cause": parent,
+                    "effect": h,
+                    "relationship": relationship,
+                    "changed_paths": [],  # Would need diff computation
+                })
+                queue.append(parent)
+
+        return {"nodes": nodes, "edges": edges}
 
     # --- Internal ---
 

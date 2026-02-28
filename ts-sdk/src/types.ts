@@ -139,6 +139,19 @@ export interface MergeOptions {
   strategy?: MergeStrategy;
 }
 
+// ---------------------------------------------------------------------------
+// Event streaming types
+// ---------------------------------------------------------------------------
+
+export interface AgitEvent {
+  event_type: string;
+  data: Record<string, unknown>;
+  timestamp: string;
+  event_id: string;
+}
+
+export type AgitEventHandler = (event: AgitEvent) => void;
+
 /** Status information for the repository. */
 export interface RepoStatus {
   /** Current HEAD commit hash, or null if no commits yet. */
