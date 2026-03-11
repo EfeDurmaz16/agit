@@ -5,7 +5,10 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use crate::blast_radius::analyze_blast_radius_opt;
 use crate::error::{AgitError, Result};
+use crate::events::{AgitEvent, InMemoryEventBus};
+use crate::guard::{GuardChain, GuardContext};
 use crate::hash::compute_state_hash;
 use crate::objects::{Blob, Commit};
 use crate::refs::{Head, RefStore};
@@ -24,6 +27,8 @@ pub struct Repository {
     agent_id: String,
     #[cfg(feature = "encryption")]
     encryptor: Option<StateEncryptor>,
+    guards: Option<GuardChain>,
+    event_bus: Option<InMemoryEventBus>,
 }
 
 impl Repository {
@@ -45,6 +50,8 @@ impl Repository {
             agent_id: "default".to_string(),
             #[cfg(feature = "encryption")]
             encryptor: None,
+            guards: None,
+            event_bus: None,
         })
     }
 
@@ -57,6 +64,16 @@ impl Repository {
     #[cfg(feature = "encryption")]
     pub fn set_encryption_key(&mut self, key: &str) {
         self.encryptor = Some(StateEncryptor::with_context(key, &self.agent_id));
+    }
+
+    /// Set a guard chain to evaluate before each commit.
+    pub fn set_guards(&mut self, guards: GuardChain) {
+        self.guards = Some(guards);
+    }
+
+    /// Set an event bus for emitting repository mutation events.
+    pub fn set_event_bus(&mut self, bus: InMemoryEventBus) {
+        self.event_bus = Some(bus);
     }
 
     /// Commit agent state, returning the commit hash.
@@ -77,7 +94,7 @@ impl Repository {
         state: &AgentState,
         message: &str,
         action_type: ActionType,
-        metadata: serde_json::Map<String, Value>,
+        mut metadata: serde_json::Map<String, Value>,
     ) -> Result<Hash> {
         // Optional encryption
         let final_state = match self.get_encryptor() {
@@ -85,6 +102,39 @@ impl Repository {
             Some(enc) => enc.encrypt_state(state)?,
             _ => state.clone(),
         };
+
+        // --- Guard evaluation (before blob creation) ---
+        // Get previous state from HEAD if it exists
+        let previous_state = match self.refs.resolve_ref("HEAD") {
+            Ok(head_hash) => self.get_state(head_hash.as_str()).await.ok(),
+            Err(AgitError::NoCommits) => None,
+            Err(_) => None,
+        };
+
+        if let Some(ref guards) = self.guards {
+            let guard_context = GuardContext {
+                new_state: state.clone(),
+                previous_state: previous_state.clone(),
+                message: message.to_string(),
+                action_type: action_type.clone(),
+                agent_id: self.agent_id.clone(),
+                branch: self.refs.current_branch().map(|s| s.to_string()),
+                metadata: metadata.clone(),
+            };
+            // If evaluate returns Err, the commit is blocked
+            guards.evaluate(&guard_context).await?;
+        }
+
+        // --- Blast radius metadata ---
+        let blast_report = analyze_blast_radius_opt(previous_state.as_ref(), state);
+        metadata.insert(
+            "blast_radius_score".to_string(),
+            serde_json::json!(blast_report.score),
+        );
+        metadata.insert(
+            "blast_radius_risk".to_string(),
+            serde_json::json!(format!("{:?}", blast_report.risk_level)),
+        );
 
         // Store the state as a blob
         let state_value = final_state.to_value();
@@ -148,6 +198,18 @@ impl Repository {
             Some(commit_hash.as_str()),
         )
         .await?;
+
+        // --- Emit CommitCreated event ---
+        if let Some(ref bus) = self.event_bus {
+            bus.emit(AgitEvent::CommitCreated {
+                hash: commit_hash.clone(),
+                message: message.to_string(),
+                author: self.agent_id.clone(),
+                action_type: action_type.clone(),
+                branch: self.refs.current_branch().map(|s| s.to_string()),
+                timestamp: Utc::now().to_rfc3339(),
+            });
+        }
 
         Ok(commit_hash)
     }
@@ -618,6 +680,8 @@ fn compute_audit_hash(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::guard::{DestructiveActionGuard, GuardChain};
+    use crate::events::InMemoryEventBus;
     use crate::storage::sqlite::SqliteStorage;
     use serde_json::json;
 
@@ -760,5 +824,84 @@ mod tests {
         };
         let logs = repo.audit_log(&filter).await.unwrap();
         assert!(!logs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_commit_blocked_by_guard() {
+        let mut repo = test_repo().await;
+
+        // Commit initial state with 4 keys
+        let initial = AgentState::new(json!({"a": 1, "b": 2, "c": 3, "d": 4}), json!({}));
+        repo.commit(&initial, "initial", ActionType::ToolCall)
+            .await
+            .unwrap();
+
+        // Set guards with DestructiveActionGuard at 50% threshold
+        let mut chain = GuardChain::new();
+        chain.add(Box::new(DestructiveActionGuard::new(0.5)));
+        repo.set_guards(chain);
+
+        // Try to commit state with only 1 key (75% deletion) — should be blocked
+        let destructive = AgentState::new(json!({"a": 1}), json!({}));
+        let result = repo
+            .commit(&destructive, "mass delete", ActionType::ToolCall)
+            .await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AgitError::GuardBlocked { guard, .. } => {
+                assert_eq!(guard, "destructive-action");
+            }
+            other => panic!("expected GuardBlocked, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_commit_allowed_when_guard_passes() {
+        let mut repo = test_repo().await;
+
+        // Commit initial state with 4 keys
+        let initial = AgentState::new(json!({"a": 1, "b": 2, "c": 3, "d": 4}), json!({}));
+        repo.commit(&initial, "initial", ActionType::ToolCall)
+            .await
+            .unwrap();
+
+        // Set guards with DestructiveActionGuard at 50% threshold
+        let mut chain = GuardChain::new();
+        chain.add(Box::new(DestructiveActionGuard::new(0.5)));
+        repo.set_guards(chain);
+
+        // Commit state with small change (1 key value changed) — should pass
+        let small_change = AgentState::new(json!({"a": 99, "b": 2, "c": 3, "d": 4}), json!({}));
+        let result = repo
+            .commit(&small_change, "small edit", ActionType::ToolCall)
+            .await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_event_bus_emits_on_commit() {
+        let mut repo = test_repo().await;
+
+        let bus = InMemoryEventBus::new();
+        repo.set_event_bus(bus.clone());
+
+        // Commit a state
+        let state = AgentState::new(json!({"key": "value"}), json!({}));
+        repo.commit(&state, "test event", ActionType::ToolCall)
+            .await
+            .unwrap();
+
+        // Assert bus.event_count() == 1
+        assert_eq!(bus.event_count(), 1);
+
+        // Assert first event is CommitCreated
+        let events = bus.events_since(0);
+        assert!(
+            matches!(&events[0], AgitEvent::CommitCreated { message, .. } if message == "test event"),
+            "expected CommitCreated event, got: {:?}",
+            events[0]
+        );
     }
 }
