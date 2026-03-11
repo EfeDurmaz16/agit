@@ -222,6 +222,13 @@ impl Repository {
         };
         self.refs.create_branch(name, source_hash.clone())?;
         self.storage.set_ref(name, source_hash.as_str()).await?;
+        if let Some(ref bus) = self.event_bus {
+            bus.emit(AgitEvent::BranchCreated {
+                name: name.to_string(),
+                from_hash: source_hash.clone(),
+                timestamp: Utc::now().to_rfc3339(),
+            });
+        }
         Ok(())
     }
 
@@ -235,7 +242,15 @@ impl Repository {
             if let Some(head_val) = refs_map.get("HEAD") {
                 self.storage.set_ref("HEAD", head_val).await?;
             }
-            return self.get_state(hash.as_str()).await;
+            let state = self.get_state(hash.as_str()).await?;
+            if let Some(ref bus) = self.event_bus {
+                bus.emit(AgitEvent::CheckoutPerformed {
+                    target: target.to_string(),
+                    is_branch: true,
+                    timestamp: Utc::now().to_rfc3339(),
+                });
+            }
+            return Ok(state);
         }
 
         // Try as commit hash
@@ -245,7 +260,15 @@ impl Repository {
             if let Some(head_val) = refs_map.get("HEAD") {
                 self.storage.set_ref("HEAD", head_val).await?;
             }
-            return self.get_state(target).await;
+            let state = self.get_state(target).await?;
+            if let Some(ref bus) = self.event_bus {
+                bus.emit(AgitEvent::CheckoutPerformed {
+                    target: target.to_string(),
+                    is_branch: false,
+                    timestamp: Utc::now().to_rfc3339(),
+                });
+            }
+            return Ok(state);
         }
 
         Err(AgitError::RefNotFound {
@@ -358,6 +381,15 @@ impl Repository {
         )
         .await?;
 
+        if let Some(ref bus) = self.event_bus {
+            bus.emit(AgitEvent::MergeCompleted {
+                merge_hash: commit_hash.clone(),
+                source_branch: branch.to_string(),
+                target_branch: current_branch.clone(),
+                timestamp: Utc::now().to_rfc3339(),
+            });
+        }
+
         Ok(commit_hash)
     }
 
@@ -402,6 +434,13 @@ impl Repository {
         let state = self.get_state(to_hash).await?;
         let message = format!("revert to {}", &to_hash[..8.min(to_hash.len())]);
         self.commit(&state, &message, ActionType::Rollback).await?;
+        if let Some(ref bus) = self.event_bus {
+            bus.emit(AgitEvent::RevertPerformed {
+                new_hash: self.head().unwrap_or_else(|_| Hash::from("")),
+                reverted_to: Hash::from(to_hash),
+                timestamp: Utc::now().to_rfc3339(),
+            });
+        }
         Ok(state)
     }
 
@@ -503,6 +542,12 @@ impl Repository {
     pub async fn delete_branch(&mut self, name: &str) -> Result<()> {
         self.refs.delete_branch(name)?;
         self.storage.delete_ref(name).await?;
+        if let Some(ref bus) = self.event_bus {
+            bus.emit(AgitEvent::BranchDeleted {
+                name: name.to_string(),
+                timestamp: Utc::now().to_rfc3339(),
+            });
+        }
         Ok(())
     }
 
@@ -878,6 +923,60 @@ mod tests {
             .await;
 
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_event_bus_emits_on_branch() {
+        let mut repo = test_repo().await;
+
+        let bus = InMemoryEventBus::new();
+        repo.set_event_bus(bus.clone());
+
+        // Commit initial state (produces 1 CommitCreated event)
+        let state = AgentState::new(json!({"v": 1}), json!({}));
+        repo.commit(&state, "initial", ActionType::ToolCall)
+            .await
+            .unwrap();
+
+        // Create a branch (produces 1 BranchCreated event)
+        repo.branch("feature", None).await.unwrap();
+
+        // Should have 2 events total: 1 commit + 1 branch
+        assert_eq!(bus.event_count(), 2);
+
+        let events = bus.events_since(0);
+        assert!(
+            matches!(&events[1], AgitEvent::BranchCreated { name, .. } if name == "feature"),
+            "expected BranchCreated event, got: {:?}",
+            events[1]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_event_bus_emits_on_revert() {
+        let mut repo = test_repo().await;
+
+        let bus = InMemoryEventBus::new();
+        repo.set_event_bus(bus.clone());
+
+        // Make 2 commits
+        let s1 = AgentState::new(json!({"v": 1}), json!({}));
+        let h1 = repo.commit(&s1, "first", ActionType::ToolCall).await.unwrap();
+
+        let s2 = AgentState::new(json!({"v": 2}), json!({}));
+        repo.commit(&s2, "second", ActionType::ToolCall).await.unwrap();
+
+        // Revert to first commit
+        repo.revert(h1.as_str()).await.unwrap();
+
+        // Should have events: CommitCreated, CommitCreated, CommitCreated (revert commit), RevertPerformed
+        let events = bus.events_since(0);
+        let has_revert = events.iter().any(|e| matches!(e, AgitEvent::RevertPerformed { .. }));
+        assert!(
+            has_revert,
+            "expected a RevertPerformed event in {:?}",
+            events
+        );
     }
 
     #[tokio::test]
