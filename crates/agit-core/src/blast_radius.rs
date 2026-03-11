@@ -9,7 +9,7 @@ const WEIGHT_MODIFIED: f64 = 0.3;
 const WEIGHT_ADDED: f64 = 0.2;
 
 /// Risk level classification for a state change.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RiskLevel {
     Low,
