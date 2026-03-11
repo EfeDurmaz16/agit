@@ -40,6 +40,12 @@ pub enum AgitError {
 
     #[error("depth limit exceeded: {0}")]
     DepthLimitExceeded(String),
+
+    #[error("guard blocked: [{guard}] {reason}")]
+    GuardBlocked { guard: String, reason: String },
+
+    #[error("approval required [{approval_id}]: {reason}")]
+    ApprovalRequired { approval_id: String, reason: String },
 }
 
 pub type Result<T> = std::result::Result<T, AgitError>;
@@ -47,6 +53,35 @@ pub type Result<T> = std::result::Result<T, AgitError>;
 impl From<serde_json::Error> for AgitError {
     fn from(e: serde_json::Error) -> Self {
         AgitError::Serialization(e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn guard_blocked_display() {
+        let err = AgitError::GuardBlocked {
+            guard: "no-secrets".to_string(),
+            reason: "found API key in source".to_string(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "guard blocked: [no-secrets] found API key in source"
+        );
+    }
+
+    #[test]
+    fn approval_required_display() {
+        let err = AgitError::ApprovalRequired {
+            approval_id: "apr-12345".to_string(),
+            reason: "changes to production config require approval".to_string(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "approval required [apr-12345]: changes to production config require approval"
+        );
     }
 }
 
