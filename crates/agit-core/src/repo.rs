@@ -725,8 +725,8 @@ fn compute_audit_hash(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::guard::{DestructiveActionGuard, GuardChain};
-    use crate::events::InMemoryEventBus;
+    use crate::guard::{BlastRadiusGuard, DestructiveActionGuard, GuardChain};
+    use crate::events::{AgitEvent, InMemoryEventBus};
     use crate::storage::sqlite::SqliteStorage;
     use serde_json::json;
 
@@ -1002,5 +1002,81 @@ mod tests {
             "expected CommitCreated event, got: {:?}",
             events[0]
         );
+    }
+
+    #[tokio::test]
+    async fn test_full_safety_pipeline() {
+        // Setup: repo with guards + event bus
+        let mut repo = test_repo().await;
+        let bus = InMemoryEventBus::new();
+        repo.set_event_bus(bus.clone());
+
+        let mut chain = GuardChain::new();
+        chain.add(Box::new(DestructiveActionGuard::default()));
+        chain.add(Box::new(BlastRadiusGuard::default()));
+        repo.set_guards(chain);
+
+        // 1. Normal commit — should succeed
+        let s1 = AgentState::new(
+            json!({"account": "acme", "balance": 10000, "risk_score": 0.2, "trades": []}),
+            json!({"market": "open"}),
+        );
+        let h1 = repo
+            .commit(&s1, "initial state", ActionType::Checkpoint)
+            .await
+            .unwrap();
+        assert_eq!(bus.event_count(), 1);
+
+        // 2. Small update — should succeed
+        let s2 = AgentState::new(
+            json!({"account": "acme", "balance": 9500, "risk_score": 0.3, "trades": ["buy AAPL"]}),
+            json!({"market": "open"}),
+        );
+        repo.commit(&s2, "execute trade", ActionType::ToolCall)
+            .await
+            .unwrap();
+        assert_eq!(bus.event_count(), 2);
+
+        // 3. Destructive action — agent tries to wipe state → BLOCKED
+        let s3 = AgentState::new(json!({}), json!({}));
+        let result = repo
+            .commit(&s3, "delete everything", ActionType::ToolCall)
+            .await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, AgitError::GuardBlocked { .. }),
+            "expected GuardBlocked, got: {:?}",
+            err
+        );
+        // Event count should NOT increase — commit was blocked
+        assert_eq!(bus.event_count(), 2);
+
+        // 4. Revert to safe state
+        let reverted = repo.revert(h1.as_str()).await.unwrap();
+        assert_eq!(
+            reverted.memory,
+            json!({"account": "acme", "balance": 10000, "risk_score": 0.2, "trades": []})
+        );
+
+        // 5. Verify audit trail
+        let filter = LogFilter {
+            limit: Some(10),
+            ..Default::default()
+        };
+        let logs = repo.audit_log(&filter).await.unwrap();
+        assert!(
+            logs.len() >= 3,
+            "expected at least 3 audit log entries (initial + trade + revert), got {}",
+            logs.len()
+        );
+
+        // 6. Verify events include RevertPerformed
+        let events = bus.events_since(0);
+        let revert_events: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, AgitEvent::RevertPerformed { .. }))
+            .collect();
+        assert_eq!(revert_events.len(), 1);
     }
 }
