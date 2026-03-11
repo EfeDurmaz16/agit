@@ -1,4 +1,5 @@
 pub mod bisect;
+pub mod blast_radius;
 pub mod causal;
 pub mod encryption;
 pub mod error;
@@ -33,4 +34,5 @@ pub use events::{AgitEvent, InMemoryEventBus};
 pub use bisect::{BisectSession, BisectResult, BisectState};
 pub use causal::{CausalGraph, CausalNode, CausalEdge, CausalRelation};
 pub use guard::{CommitGuard, GuardChain, GuardContext, GuardDecision};
+pub use blast_radius::{BlastRadiusReport, RiskLevel, analyze_blast_radius, analyze_blast_radius_opt};
 pub use migration::{MigrationResult, MigrationApplyResult, CURRENT_SCHEMA_VERSION, apply_schema_migrations, migrate_data};
