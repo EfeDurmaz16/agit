@@ -49,3 +49,6 @@ docker/*.env
 
 # agit data
 *.agit/
+
+# Worktrees
+.worktrees/
