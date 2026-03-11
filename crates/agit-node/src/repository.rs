@@ -187,6 +187,43 @@ impl JsRepository {
         };
         repo.list_branches().keys().cloned().collect()
     }
+
+    /// Enable the default safety guards (destructive action + blast radius).
+    #[napi]
+    pub async fn enable_guards(
+        &self,
+        deletion_threshold: Option<f64>,
+        risk_threshold: Option<String>,
+    ) -> Result<()> {
+        use agit_core::blast_radius::RiskLevel;
+        use agit_core::guard::{BlastRadiusGuard, DestructiveActionGuard, GuardChain};
+
+        let del_thresh = deletion_threshold.unwrap_or(0.5);
+        let risk = match risk_threshold.as_deref() {
+            Some("low") => RiskLevel::Low,
+            Some("medium") => RiskLevel::Medium,
+            Some("high") => RiskLevel::High,
+            _ => RiskLevel::Critical,
+        };
+
+        let mut guards = GuardChain::new();
+        guards.add(Box::new(DestructiveActionGuard::new(del_thresh)));
+        guards.add(Box::new(BlastRadiusGuard::new(risk)));
+
+        let mut repo = self.inner.lock().await;
+        repo.set_guards(guards);
+        Ok(())
+    }
+
+    /// Set an event bus for real-time notifications.
+    #[napi]
+    pub async fn enable_events(&self) -> Result<()> {
+        use agit_core::events::InMemoryEventBus;
+        let bus = InMemoryEventBus::new();
+        let mut repo = self.inner.lock().await;
+        repo.set_event_bus(bus);
+        Ok(())
+    }
 }
 
 fn parse_action_type(s: &str) -> ActionType {
