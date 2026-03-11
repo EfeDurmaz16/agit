@@ -1,3 +1,4 @@
+pub mod approval;
 pub mod bisect;
 pub mod blast_radius;
 pub mod causal;
@@ -36,3 +37,4 @@ pub use causal::{CausalGraph, CausalNode, CausalEdge, CausalRelation};
 pub use guard::{CommitGuard, GuardChain, GuardContext, GuardDecision, DestructiveActionGuard, BlastRadiusGuard};
 pub use blast_radius::{BlastRadiusReport, RiskLevel, analyze_blast_radius, analyze_blast_radius_opt};
 pub use migration::{MigrationResult, MigrationApplyResult, CURRENT_SCHEMA_VERSION, apply_schema_migrations, migrate_data};
+pub use approval::{ApprovalStore, ApprovalStatus, PendingApproval};
