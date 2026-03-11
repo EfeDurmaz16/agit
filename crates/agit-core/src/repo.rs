@@ -5,7 +5,10 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use crate::blast_radius::analyze_blast_radius_opt;
 use crate::error::{AgitError, Result};
+use crate::events::{AgitEvent, InMemoryEventBus};
+use crate::guard::{GuardChain, GuardContext};
 use crate::hash::compute_state_hash;
 use crate::objects::{Blob, Commit};
 use crate::refs::{Head, RefStore};
@@ -24,6 +27,8 @@ pub struct Repository {
     agent_id: String,
     #[cfg(feature = "encryption")]
     encryptor: Option<StateEncryptor>,
+    guards: Option<GuardChain>,
+    event_bus: Option<InMemoryEventBus>,
 }
 
 impl Repository {
@@ -45,6 +50,8 @@ impl Repository {
             agent_id: "default".to_string(),
             #[cfg(feature = "encryption")]
             encryptor: None,
+            guards: None,
+            event_bus: None,
         })
     }
 
@@ -57,6 +64,16 @@ impl Repository {
     #[cfg(feature = "encryption")]
     pub fn set_encryption_key(&mut self, key: &str) {
         self.encryptor = Some(StateEncryptor::with_context(key, &self.agent_id));
+    }
+
+    /// Set a guard chain to evaluate before each commit.
+    pub fn set_guards(&mut self, guards: GuardChain) {
+        self.guards = Some(guards);
+    }
+
+    /// Set an event bus for emitting repository mutation events.
+    pub fn set_event_bus(&mut self, bus: InMemoryEventBus) {
+        self.event_bus = Some(bus);
     }
 
     /// Commit agent state, returning the commit hash.
@@ -77,7 +94,7 @@ impl Repository {
         state: &AgentState,
         message: &str,
         action_type: ActionType,
-        metadata: serde_json::Map<String, Value>,
+        mut metadata: serde_json::Map<String, Value>,
     ) -> Result<Hash> {
         // Optional encryption
         let final_state = match self.get_encryptor() {
@@ -85,6 +102,39 @@ impl Repository {
             Some(enc) => enc.encrypt_state(state)?,
             _ => state.clone(),
         };
+
+        // --- Guard evaluation (before blob creation) ---
+        // Get previous state from HEAD if it exists
+        let previous_state = match self.refs.resolve_ref("HEAD") {
+            Ok(head_hash) => self.get_state(head_hash.as_str()).await.ok(),
+            Err(AgitError::NoCommits) => None,
+            Err(_) => None,
+        };
+
+        if let Some(ref guards) = self.guards {
+            let guard_context = GuardContext {
+                new_state: state.clone(),
+                previous_state: previous_state.clone(),
+                message: message.to_string(),
+                action_type: action_type.clone(),
+                agent_id: self.agent_id.clone(),
+                branch: self.refs.current_branch().map(|s| s.to_string()),
+                metadata: metadata.clone(),
+            };
+            // If evaluate returns Err, the commit is blocked
+            guards.evaluate(&guard_context).await?;
+        }
+
+        // --- Blast radius metadata ---
+        let blast_report = analyze_blast_radius_opt(previous_state.as_ref(), state);
+        metadata.insert(
+            "blast_radius_score".to_string(),
+            serde_json::json!(blast_report.score),
+        );
+        metadata.insert(
+            "blast_radius_risk".to_string(),
+            serde_json::json!(format!("{:?}", blast_report.risk_level)),
+        );
 
         // Store the state as a blob
         let state_value = final_state.to_value();
@@ -149,6 +199,18 @@ impl Repository {
         )
         .await?;
 
+        // --- Emit CommitCreated event ---
+        if let Some(ref bus) = self.event_bus {
+            bus.emit(AgitEvent::CommitCreated {
+                hash: commit_hash.clone(),
+                message: message.to_string(),
+                author: self.agent_id.clone(),
+                action_type: action_type.clone(),
+                branch: self.refs.current_branch().map(|s| s.to_string()),
+                timestamp: Utc::now().to_rfc3339(),
+            });
+        }
+
         Ok(commit_hash)
     }
 
@@ -160,6 +222,13 @@ impl Repository {
         };
         self.refs.create_branch(name, source_hash.clone())?;
         self.storage.set_ref(name, source_hash.as_str()).await?;
+        if let Some(ref bus) = self.event_bus {
+            bus.emit(AgitEvent::BranchCreated {
+                name: name.to_string(),
+                from_hash: source_hash.clone(),
+                timestamp: Utc::now().to_rfc3339(),
+            });
+        }
         Ok(())
     }
 
@@ -173,7 +242,15 @@ impl Repository {
             if let Some(head_val) = refs_map.get("HEAD") {
                 self.storage.set_ref("HEAD", head_val).await?;
             }
-            return self.get_state(hash.as_str()).await;
+            let state = self.get_state(hash.as_str()).await?;
+            if let Some(ref bus) = self.event_bus {
+                bus.emit(AgitEvent::CheckoutPerformed {
+                    target: target.to_string(),
+                    is_branch: true,
+                    timestamp: Utc::now().to_rfc3339(),
+                });
+            }
+            return Ok(state);
         }
 
         // Try as commit hash
@@ -183,7 +260,15 @@ impl Repository {
             if let Some(head_val) = refs_map.get("HEAD") {
                 self.storage.set_ref("HEAD", head_val).await?;
             }
-            return self.get_state(target).await;
+            let state = self.get_state(target).await?;
+            if let Some(ref bus) = self.event_bus {
+                bus.emit(AgitEvent::CheckoutPerformed {
+                    target: target.to_string(),
+                    is_branch: false,
+                    timestamp: Utc::now().to_rfc3339(),
+                });
+            }
+            return Ok(state);
         }
 
         Err(AgitError::RefNotFound {
@@ -296,6 +381,15 @@ impl Repository {
         )
         .await?;
 
+        if let Some(ref bus) = self.event_bus {
+            bus.emit(AgitEvent::MergeCompleted {
+                merge_hash: commit_hash.clone(),
+                source_branch: branch.to_string(),
+                target_branch: current_branch.clone(),
+                timestamp: Utc::now().to_rfc3339(),
+            });
+        }
+
         Ok(commit_hash)
     }
 
@@ -340,6 +434,13 @@ impl Repository {
         let state = self.get_state(to_hash).await?;
         let message = format!("revert to {}", &to_hash[..8.min(to_hash.len())]);
         self.commit(&state, &message, ActionType::Rollback).await?;
+        if let Some(ref bus) = self.event_bus {
+            bus.emit(AgitEvent::RevertPerformed {
+                new_hash: self.head().unwrap_or_else(|_| Hash::from("")),
+                reverted_to: Hash::from(to_hash),
+                timestamp: Utc::now().to_rfc3339(),
+            });
+        }
         Ok(state)
     }
 
@@ -441,6 +542,12 @@ impl Repository {
     pub async fn delete_branch(&mut self, name: &str) -> Result<()> {
         self.refs.delete_branch(name)?;
         self.storage.delete_ref(name).await?;
+        if let Some(ref bus) = self.event_bus {
+            bus.emit(AgitEvent::BranchDeleted {
+                name: name.to_string(),
+                timestamp: Utc::now().to_rfc3339(),
+            });
+        }
         Ok(())
     }
 
@@ -618,6 +725,8 @@ fn compute_audit_hash(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::guard::{BlastRadiusGuard, DestructiveActionGuard, GuardChain};
+    use crate::events::{AgitEvent, InMemoryEventBus};
     use crate::storage::sqlite::SqliteStorage;
     use serde_json::json;
 
@@ -760,5 +869,214 @@ mod tests {
         };
         let logs = repo.audit_log(&filter).await.unwrap();
         assert!(!logs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_commit_blocked_by_guard() {
+        let mut repo = test_repo().await;
+
+        // Commit initial state with 4 keys
+        let initial = AgentState::new(json!({"a": 1, "b": 2, "c": 3, "d": 4}), json!({}));
+        repo.commit(&initial, "initial", ActionType::ToolCall)
+            .await
+            .unwrap();
+
+        // Set guards with DestructiveActionGuard at 50% threshold
+        let mut chain = GuardChain::new();
+        chain.add(Box::new(DestructiveActionGuard::new(0.5)));
+        repo.set_guards(chain);
+
+        // Try to commit state with only 1 key (75% deletion) — should be blocked
+        let destructive = AgentState::new(json!({"a": 1}), json!({}));
+        let result = repo
+            .commit(&destructive, "mass delete", ActionType::ToolCall)
+            .await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AgitError::GuardBlocked { guard, .. } => {
+                assert_eq!(guard, "destructive-action");
+            }
+            other => panic!("expected GuardBlocked, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_commit_allowed_when_guard_passes() {
+        let mut repo = test_repo().await;
+
+        // Commit initial state with 4 keys
+        let initial = AgentState::new(json!({"a": 1, "b": 2, "c": 3, "d": 4}), json!({}));
+        repo.commit(&initial, "initial", ActionType::ToolCall)
+            .await
+            .unwrap();
+
+        // Set guards with DestructiveActionGuard at 50% threshold
+        let mut chain = GuardChain::new();
+        chain.add(Box::new(DestructiveActionGuard::new(0.5)));
+        repo.set_guards(chain);
+
+        // Commit state with small change (1 key value changed) — should pass
+        let small_change = AgentState::new(json!({"a": 99, "b": 2, "c": 3, "d": 4}), json!({}));
+        let result = repo
+            .commit(&small_change, "small edit", ActionType::ToolCall)
+            .await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_event_bus_emits_on_branch() {
+        let mut repo = test_repo().await;
+
+        let bus = InMemoryEventBus::new();
+        repo.set_event_bus(bus.clone());
+
+        // Commit initial state (produces 1 CommitCreated event)
+        let state = AgentState::new(json!({"v": 1}), json!({}));
+        repo.commit(&state, "initial", ActionType::ToolCall)
+            .await
+            .unwrap();
+
+        // Create a branch (produces 1 BranchCreated event)
+        repo.branch("feature", None).await.unwrap();
+
+        // Should have 2 events total: 1 commit + 1 branch
+        assert_eq!(bus.event_count(), 2);
+
+        let events = bus.events_since(0);
+        assert!(
+            matches!(&events[1], AgitEvent::BranchCreated { name, .. } if name == "feature"),
+            "expected BranchCreated event, got: {:?}",
+            events[1]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_event_bus_emits_on_revert() {
+        let mut repo = test_repo().await;
+
+        let bus = InMemoryEventBus::new();
+        repo.set_event_bus(bus.clone());
+
+        // Make 2 commits
+        let s1 = AgentState::new(json!({"v": 1}), json!({}));
+        let h1 = repo.commit(&s1, "first", ActionType::ToolCall).await.unwrap();
+
+        let s2 = AgentState::new(json!({"v": 2}), json!({}));
+        repo.commit(&s2, "second", ActionType::ToolCall).await.unwrap();
+
+        // Revert to first commit
+        repo.revert(h1.as_str()).await.unwrap();
+
+        // Should have events: CommitCreated, CommitCreated, CommitCreated (revert commit), RevertPerformed
+        let events = bus.events_since(0);
+        let has_revert = events.iter().any(|e| matches!(e, AgitEvent::RevertPerformed { .. }));
+        assert!(
+            has_revert,
+            "expected a RevertPerformed event in {:?}",
+            events
+        );
+    }
+
+    #[tokio::test]
+    async fn test_event_bus_emits_on_commit() {
+        let mut repo = test_repo().await;
+
+        let bus = InMemoryEventBus::new();
+        repo.set_event_bus(bus.clone());
+
+        // Commit a state
+        let state = AgentState::new(json!({"key": "value"}), json!({}));
+        repo.commit(&state, "test event", ActionType::ToolCall)
+            .await
+            .unwrap();
+
+        // Assert bus.event_count() == 1
+        assert_eq!(bus.event_count(), 1);
+
+        // Assert first event is CommitCreated
+        let events = bus.events_since(0);
+        assert!(
+            matches!(&events[0], AgitEvent::CommitCreated { message, .. } if message == "test event"),
+            "expected CommitCreated event, got: {:?}",
+            events[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_full_safety_pipeline() {
+        // Setup: repo with guards + event bus
+        let mut repo = test_repo().await;
+        let bus = InMemoryEventBus::new();
+        repo.set_event_bus(bus.clone());
+
+        let mut chain = GuardChain::new();
+        chain.add(Box::new(DestructiveActionGuard::default()));
+        chain.add(Box::new(BlastRadiusGuard::default()));
+        repo.set_guards(chain);
+
+        // 1. Normal commit — should succeed
+        let s1 = AgentState::new(
+            json!({"account": "acme", "balance": 10000, "risk_score": 0.2, "trades": []}),
+            json!({"market": "open"}),
+        );
+        let h1 = repo
+            .commit(&s1, "initial state", ActionType::Checkpoint)
+            .await
+            .unwrap();
+        assert_eq!(bus.event_count(), 1);
+
+        // 2. Small update — should succeed
+        let s2 = AgentState::new(
+            json!({"account": "acme", "balance": 9500, "risk_score": 0.3, "trades": ["buy AAPL"]}),
+            json!({"market": "open"}),
+        );
+        repo.commit(&s2, "execute trade", ActionType::ToolCall)
+            .await
+            .unwrap();
+        assert_eq!(bus.event_count(), 2);
+
+        // 3. Destructive action — agent tries to wipe state → BLOCKED
+        let s3 = AgentState::new(json!({}), json!({}));
+        let result = repo
+            .commit(&s3, "delete everything", ActionType::ToolCall)
+            .await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, AgitError::GuardBlocked { .. }),
+            "expected GuardBlocked, got: {:?}",
+            err
+        );
+        // Event count should NOT increase — commit was blocked
+        assert_eq!(bus.event_count(), 2);
+
+        // 4. Revert to safe state
+        let reverted = repo.revert(h1.as_str()).await.unwrap();
+        assert_eq!(
+            reverted.memory,
+            json!({"account": "acme", "balance": 10000, "risk_score": 0.2, "trades": []})
+        );
+
+        // 5. Verify audit trail
+        let filter = LogFilter {
+            limit: Some(10),
+            ..Default::default()
+        };
+        let logs = repo.audit_log(&filter).await.unwrap();
+        assert!(
+            logs.len() >= 3,
+            "expected at least 3 audit log entries (initial + trade + revert), got {}",
+            logs.len()
+        );
+
+        // 6. Verify events include RevertPerformed
+        let events = bus.events_since(0);
+        let revert_events: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, AgitEvent::RevertPerformed { .. }))
+            .collect();
+        assert_eq!(revert_events.len(), 1);
     }
 }

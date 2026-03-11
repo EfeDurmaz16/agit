@@ -270,6 +270,48 @@ impl PyRepository {
         Ok(d.into())
     }
 
+    /// Enable the default safety guards.
+    /// deletion_threshold: max deletion ratio (0.0-1.0, default 0.5)
+    /// risk_threshold: "low" | "medium" | "high" | "critical" (default "critical")
+    #[pyo3(signature = (deletion_threshold=None, risk_threshold=None))]
+    fn enable_guards(
+        &mut self,
+        deletion_threshold: Option<f64>,
+        risk_threshold: Option<&str>,
+    ) -> PyResult<()> {
+        use agit_core::blast_radius::RiskLevel;
+        use agit_core::guard::{BlastRadiusGuard, DestructiveActionGuard, GuardChain};
+
+        let del_thresh = deletion_threshold.unwrap_or(0.5);
+        let risk = match risk_threshold {
+            Some("low") => RiskLevel::Low,
+            Some("medium") => RiskLevel::Medium,
+            Some("high") => RiskLevel::High,
+            _ => RiskLevel::Critical,
+        };
+
+        let mut guards = GuardChain::new();
+        guards.add(Box::new(DestructiveActionGuard::new(del_thresh)));
+        guards.add(Box::new(BlastRadiusGuard::new(risk)));
+
+        let repo = self.inner.as_mut().ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("repository closed")
+        })?;
+        repo.set_guards(guards);
+        Ok(())
+    }
+
+    /// Enable event bus for real-time notifications.
+    fn enable_events(&mut self) -> PyResult<()> {
+        use agit_core::events::InMemoryEventBus;
+        let bus = InMemoryEventBus::new();
+        let repo = self.inner.as_mut().ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("repository closed")
+        })?;
+        repo.set_event_bus(bus);
+        Ok(())
+    }
+
     fn __repr__(&self) -> String {
         match &self.inner {
             Some(repo) => format!(

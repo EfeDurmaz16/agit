@@ -7,6 +7,7 @@ import time
 from typing import Any, Callable
 
 from agit.engine.pii_masker import PiiMasker
+from agit.engine.validator import ValidatorRegistry
 
 logger = logging.getLogger("agit.engine")
 
@@ -56,6 +57,7 @@ class ExecutionEngine:
         auto_gc_interval: int = 0,
         pii_masker: PiiMasker | None = None,
         encryption_key: str | None = None,
+        validator_registry: ValidatorRegistry | None = None,
     ) -> None:
         self._repo_path = repo_path
         self._agent_id = agent_id
@@ -63,6 +65,7 @@ class ExecutionEngine:
         self._auto_gc_interval = auto_gc_interval
         self._commit_count = 0
         self._pii_masker = pii_masker
+        self._validator = validator_registry
 
         # Instantiate the correct repository backend
         self._repo = _PyRepository(repo_path, agent_id)
@@ -110,6 +113,12 @@ class ExecutionEngine:
         (result, commit_hash):
             The action result and the hash of the post-action commit.
         """
+        # Pre-validation: abort early if state violates invariants
+        if self._validator is not None:
+            report = self._validator.validate_pre(state)
+            if not report.passed:
+                report.raise_on_failure()
+
         pre_state_obj = self._dict_to_state(state)
 
         # Pre-action checkpoint
@@ -133,6 +142,13 @@ class ExecutionEngine:
         else:
             # The action may return a raw value; wrap it in memory
             new_state = {**state, "last_result": result}
+
+        # Post-validation: warn on invariant violations after the action
+        if self._validator is not None:
+            post_report = self._validator.validate_post(state, new_state)
+            if not post_report.passed:
+                for failure in post_report.failures:
+                    logger.warning("Post-validation: %s", failure)
 
         if self._pii_masker is not None:
             new_state = self._pii_masker.mask(new_state)
@@ -182,6 +198,12 @@ class ExecutionEngine:
         action_type: str = "checkpoint",
     ) -> str:
         """Directly commit *state* without running an action function."""
+        # Pre-validation: abort if state violates invariants
+        if self._validator is not None:
+            report = self._validator.validate_pre(state)
+            if not report.passed:
+                report.raise_on_failure()
+
         if self._pii_masker is not None:
             state = self._pii_masker.mask(state)
         state_obj = self._dict_to_state(state)
