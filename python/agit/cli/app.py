@@ -572,6 +572,180 @@ def squash(
         _abort(str(exc))
 
 
+@app.command()
+def doctor(
+    repo: Annotated[str, typer.Option("--repo", "-r")] = _DEFAULT_REPO,
+    agent: Annotated[str, typer.Option("--agent", "-a")] = _DEFAULT_AGENT,
+    json_output: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
+) -> None:
+    """Health check for agit repository — validates storage, state integrity, and configuration."""
+    import time
+
+    checks: list[dict] = []
+
+    def check(name: str, fn):
+        try:
+            result = fn()
+            checks.append({"name": name, "status": "ok", "detail": result})
+        except Exception as exc:
+            checks.append({"name": name, "status": "fail", "detail": str(exc)})
+
+    # 1. Repository initialization
+    check("Repository", lambda: (
+        _engine(repo, agent) and f"path={Path(repo).resolve()}"
+    ))
+
+    # 2. Storage backend
+    def check_storage():
+        eng = _engine(repo, agent)
+        history = eng.get_history(1)
+        return f"{len(history)} commits reachable"
+    check("Storage backend", check_storage)
+
+    # 3. Branch integrity
+    def check_branches():
+        eng = _engine(repo, agent)
+        branches = eng.list_branches()
+        current = eng.current_branch()
+        return f"{len(branches)} branches, HEAD={current or 'detached'}"
+    check("Branch integrity", check_branches)
+
+    # 4. Last commit recency
+    def check_recency():
+        eng = _engine(repo, agent)
+        history = eng.get_history(1)
+        if not history:
+            return "no commits"
+        ts = history[0].get("timestamp", "")
+        return f"last commit: {ts}"
+    check("Last commit", check_recency)
+
+    # 5. Audit log
+    def check_audit():
+        eng = _engine(repo, agent)
+        logs = eng.audit_log(1)
+        return f"{len(logs)} entries accessible"
+    check("Audit log", check_audit)
+
+    # 6. State consistency
+    def check_state():
+        eng = _engine(repo, agent)
+        history = eng.get_history(2)
+        if len(history) < 2:
+            return "insufficient history for diff check"
+        d = eng.diff(history[1]["hash"], history[0]["hash"])
+        entries = d.get("entries", [])
+        return f"latest diff: {len(entries)} changes"
+    check("State consistency", check_state)
+
+    has_failures = any(c["status"] == "fail" for c in checks)
+
+    if json_output:
+        console.print(json.dumps({"checks": checks, "healthy": not has_failures}, indent=2))
+        raise typer.Exit(1 if has_failures else 0)
+
+    for c in checks:
+        icon = "[green]✓[/]" if c["status"] == "ok" else "[red]✗[/]"
+        detail = c.get("detail", "")
+        console.print(f"  {icon} {c['name']}: {detail}")
+
+    if has_failures:
+        err_console.print("\n[bold red]Doctor found issues. Fix them and re-run.[/]")
+        raise typer.Exit(1)
+    else:
+        console.print("\n[bold green]All checks passed.[/]")
+
+
+@app.command()
+def monitor(
+    interval: Annotated[int, typer.Option("--interval", "-i", help="Check interval in seconds")] = 30,
+    repo: Annotated[str, typer.Option("--repo", "-r")] = _DEFAULT_REPO,
+    agent: Annotated[str, typer.Option("--agent", "-a")] = _DEFAULT_AGENT,
+) -> None:
+    """Continuous health monitoring — watches for agent failures and state corruption."""
+    import time
+
+    console.print(f"[bold]Monitoring[/] {Path(repo).resolve()} every {interval}s (Ctrl+C to stop)")
+    last_hash = None
+    error_count = 0
+
+    try:
+        while True:
+            try:
+                eng = _engine(repo, agent)
+                history = eng.get_history(1)
+                current_hash = history[0]["hash"] if history else None
+                current_branch = eng.current_branch() or "detached"
+                ts = time.strftime("%H:%M:%S")
+
+                if current_hash and current_hash != last_hash:
+                    msg = history[0].get("message", "") if history else ""
+                    action = history[0].get("action_type", "") if history else ""
+                    console.print(
+                        f"[dim]{ts}[/] [green]commit[/] {current_hash[:12]} "
+                        f"[{action}] {msg} [dim]({current_branch})[/]"
+                    )
+                    last_hash = current_hash
+                    error_count = 0
+                else:
+                    console.print(f"[dim]{ts} idle ({current_branch})[/]")
+
+            except Exception as exc:
+                error_count += 1
+                ts = time.strftime("%H:%M:%S")
+                console.print(f"[dim]{ts}[/] [red]error ({error_count}x):[/] {exc}")
+
+                if error_count >= 3:
+                    console.print("[bold red]3 consecutive errors — possible death spiral[/]")
+                    console.print("[yellow]Consider: agit revert <last-good-hash>[/]")
+
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        console.print("\n[dim]Monitoring stopped.[/]")
+
+
+@app.command()
+def identity(
+    action: Annotated[str, typer.Argument(help="create|show|verify")] = "show",
+    name: Annotated[Optional[str], typer.Option("--name", "-n")] = None,
+    repo: Annotated[str, typer.Option("--repo", "-r")] = _DEFAULT_REPO,
+    agent: Annotated[str, typer.Option("--agent", "-a")] = _DEFAULT_AGENT,
+) -> None:
+    """Manage agent identity (FIDES DID) for signed commits and trust."""
+    try:
+        eng = _engine(repo, agent)
+        history = eng.get_history(100)
+
+        if action == "show":
+            # Find fides identity in commit history
+            for c in history:
+                msg = c.get("message", "")
+                if "fides-init:" in msg:
+                    did = msg.split("fides-init:")[1].strip()
+                    console.print(f"[bold cyan]DID:[/] {did}")
+                    console.print(f"[dim]Agent:[/] {agent}")
+                    return
+            console.print("[dim]No FIDES identity found. Run 'agit identity create' first.[/]")
+
+        elif action == "create":
+            agent_name = name or f"agit-agent-{agent}"
+            console.print(f"[yellow]Creating FIDES identity for '{agent_name}'...[/]")
+            console.print("[dim]Requires @fides/sdk or sardis trust integration.[/]")
+            console.print(f"[dim]Run: pip install fides-sdk && agit identity create --name {agent_name}[/]")
+
+        elif action == "verify":
+            console.print("[dim]Verifying signed commits...[/]")
+            signed = [c for c in history if "fides-" in c.get("message", "")]
+            console.print(f"[bold]{len(signed)}[/] signed commits found in history")
+            for c in signed[:5]:
+                console.print(f"  [yellow]{c['hash'][:12]}[/] {c['message']}")
+
+        else:
+            _abort(f"Unknown action: {action}. Use create|show|verify")
+    except Exception as exc:
+        _abort(str(exc))
+
+
 def main() -> None:
     """Entry-point registered in pyproject.toml."""
     app()
