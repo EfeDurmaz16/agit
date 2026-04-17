@@ -1,4 +1,4 @@
-[![CI](https://github.com/anthropics/agit/actions/workflows/ci.yml/badge.svg)](https://github.com/anthropics/agit/actions/workflows/ci.yml)
+[![CI](https://github.com/EfeDurmaz16/agit/actions/workflows/ci.yml/badge.svg)](https://github.com/EfeDurmaz16/agit/actions/workflows/ci.yml)
 
 # AgentGit (agit)
 
