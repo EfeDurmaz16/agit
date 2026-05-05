@@ -1,10 +1,10 @@
 [![CI](https://github.com/EfeDurmaz16/agit/actions/workflows/ci.yml/badge.svg)](https://github.com/EfeDurmaz16/agit/actions/workflows/ci.yml)
 
-# AgentGit (agit)
+# AgentGit (agit) — Git-like version control, audit trails, and rollback for AI agent state
 
-**Git-like version control for AI agents.** Every agent action is a commit — diffable, revertable, auditable.
+**Alpha.** A Rust-first VCS engine for agent actions: content-addressed commits, branch/merge workflows, JSON state diffs, rollback, and signed audit history across Python and TypeScript SDKs.
 
-agit is a purpose-built VCS engine for the AI agent lifecycle. It combines a high-performance Rust core with Python and TypeScript SDKs to provide structured state versioning, three-way merge for JSON state, encrypted audit trails, and 9+ framework integrations — including the only native support for both Google A2A and FIDES trust protocols.
+agit is built for the AI agent lifecycle. It combines a Rust core with Python and TypeScript SDKs to provide structured state versioning, three-way merge for JSON state, encrypted audit trails, and integration hooks for agent frameworks and trust protocols.
 
 ## Why agit?
 

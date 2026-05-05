@@ -29,11 +29,11 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/anthropics/agit"
-Documentation = "https://github.com/anthropics/agit/tree/main/docs"
-Repository = "https://github.com/anthropics/agit"
-Issues = "https://github.com/anthropics/agit/issues"
-Changelog = "https://github.com/anthropics/agit/releases"
+Homepage = "https://github.com/EfeDurmaz16/agit"
+Documentation = "https://github.com/EfeDurmaz16/agit/tree/main/docs"
+Repository = "https://github.com/EfeDurmaz16/agit"
+Issues = "https://github.com/EfeDurmaz16/agit/issues"
+Changelog = "https://github.com/EfeDurmaz16/agit/releases"
 
 [project.optional-dependencies]
 google-adk = ["google-adk>=1.25,<2.0"]

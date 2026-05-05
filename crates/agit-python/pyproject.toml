@@ -25,8 +25,8 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/anthropics/agit"
-Repository = "https://github.com/anthropics/agit"
+Homepage = "https://github.com/EfeDurmaz16/agit"
+Repository = "https://github.com/EfeDurmaz16/agit"
 
 [tool.maturin]
 features = ["pyo3/extension-module"]

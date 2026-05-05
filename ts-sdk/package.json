@@ -7,7 +7,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/anthropics/agit.git",
+    "url": "https://github.com/EfeDurmaz16/agit.git",
     "directory": "ts-sdk"
   },
   "keywords": ["ai", "agents", "version-control", "git", "typescript", "sdk"],
